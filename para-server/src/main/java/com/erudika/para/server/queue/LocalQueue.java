@@ -18,7 +18,6 @@
 package com.erudika.para.server.queue;
 
 import com.erudika.para.core.listeners.DestroyListener;
-import com.erudika.para.core.queue.MockQueue;
 import com.erudika.para.core.queue.Queue;
 import com.erudika.para.core.queue.River;
 import com.erudika.para.core.utils.Para;
@@ -36,7 +35,7 @@ import org.slf4j.LoggerFactory;
  */
 public class LocalQueue implements Queue {
 
-	private static final Logger logger = LoggerFactory.getLogger(MockQueue.class);
+	private static final Logger logger = LoggerFactory.getLogger(LocalQueue.class);
 	private static final int SLEEP = Para.getConfig().queuePollingWaitSec();
 	private static Future<?> pollingTask;
 	private static final int MAX_MESSAGES = 10;  //max in bulk
@@ -109,7 +108,7 @@ public class LocalQueue implements Queue {
 						if (!StringUtils.isBlank(msg)) {
 							msgs.add(msg);
 						}
-					} while (!StringUtils.isBlank(msg) && msgs.size() <= MAX_MESSAGES);
+					} while (!StringUtils.isBlank(msg) && msgs.size() < MAX_MESSAGES);
 					return msgs;
 				}
 			});

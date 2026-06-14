@@ -25,6 +25,7 @@ import com.erudika.para.core.utils.Pager;
 import com.erudika.para.core.utils.Para;
 import com.erudika.para.core.utils.ParaObjectUtils;
 import com.erudika.para.core.validation.ValidationUtils;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -154,11 +155,17 @@ public class ManagedDAO implements DAO {
 				try (Metrics.Context context = Metrics.time(appid, Para.getSearch().getClass(), "index")) {
 					Para.getSearch().index(appid, obj);
 					logger.debug("Search: Indexed {}->{}", appid, obj.getId());
+				} catch (Exception e) {
+					logger.error("Failed to index object '{}' for app '{}' after DB write. "
+							+ "Search index may be out of sync.", obj.getId(), appid, e);
 				}
 			}
 			if (obj.getCached() && obj.getVersion() >= 0 && Para.getConfig().isCacheEnabled()) {
 				try (Metrics.Context context = Metrics.time(appid, Para.getCache().getClass(), "put")) {
 					Para.getCache().put(appid, obj.getId(), obj);
+				} catch (Exception e) {
+					logger.error("Failed to cache object '{}' for app '{}' after DB write.",
+							obj.getId(), appid, e);
 				}
 				logger.debug("Cache: Cache put: {}->{}", appid, obj.getId());
 			}
@@ -175,19 +182,44 @@ public class ManagedDAO implements DAO {
 			return;
 		}
 		objects = objects.stream().map(o -> ParaObjectUtils.checkAndFixType(o)).toList();
-		invokeDAOBatchWrite(appid, objects.stream().filter(o -> o != null && o.getStored()).toList(), daoFunction, opName);
+
+		// Validate each object before persisting, consistent with single-object path
+		List<P> validObjects = new ArrayList<>();
+		for (P obj : objects) {
+			if (obj == null) {
+				continue;
+			}
+			String[] errors = ValidationUtils.validateObject(obj);
+			if (errors.length == 0) {
+				validObjects.add(obj);
+			} else {
+				logger.warn("DAO: Invalid object {}->{} errors: [{}]. Skipped from batch.",
+						appid, obj, String.join("; ", errors));
+			}
+		}
+		if (validObjects.isEmpty()) {
+			return;
+		}
+
+		invokeDAOBatchWrite(appid, validObjects.stream().filter(o -> o.getStored()).toList(), daoFunction, opName);
 		if (Para.getConfig().isSearchEnabled()) {
 			try (Metrics.Context context = Metrics.time(appid, Para.getSearch().getClass(), "indexAll")) {
-				Para.getSearch().indexAll(appid, objects.stream().filter(o -> o != null && o.getIndexed() && o.getVersion() >= 0).toList());
+				Para.getSearch().indexAll(appid, validObjects.stream().filter(o -> o.getIndexed() && o.getVersion() >= 0).toList());
+			} catch (Exception e) {
+				logger.error("Failed to index batch of {} objects for app '{}' after DB write. "
+						+ "Search index may be out of sync.", validObjects.size(), appid, e);
 			}
-			logger.debug("Search: Indexed all {}->{}", appid, objects.size());
+			logger.debug("Search: Indexed all {}->{}", appid, validObjects.size());
 		}
-		Map<String, ParaObject> toCache = objects.stream().
-				filter(o -> o != null && o.getCached() && o.getVersion() >= 0).
+		Map<String, ParaObject> toCache = validObjects.stream().
+				filter(o -> o.getCached() && o.getVersion() >= 0).
 				collect(Collectors.toMap(k -> k.getId(), v -> v));
 		if (!toCache.isEmpty() && Para.getConfig().isCacheEnabled()) {
 			try (Metrics.Context context = Metrics.time(appid, Para.getCache().getClass(), "putAll")) {
 				Para.getCache().putAll(appid, toCache);
+			} catch (Exception e) {
+				logger.error("Failed to cache batch of {} objects for app '{}' after DB write.",
+						toCache.size(), appid, e);
 			}
 			logger.debug("Cache: Cache put page: {}->{}", appid, toCache.keySet());
 		}

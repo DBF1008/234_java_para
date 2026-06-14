@@ -62,7 +62,7 @@ public abstract class River implements Runnable {
 
 	private static final Logger logger = LoggerFactory.getLogger(River.class);
 	private static final CloseableHttpClient HTTP;
-	private static ConcurrentHashMap<String, Integer> pendingIds;
+	private final Map<String, Map<String, Integer>> pendingIdsByApp = new ConcurrentHashMap<>();
 
 	/**
 	 * Protected constructor for subclasses.
@@ -94,6 +94,7 @@ public abstract class River implements Runnable {
 		List<ParaObject> createList = new LinkedList<>();
 		List<ParaObject> updateList = new LinkedList<>();
 		List<ParaObject> deleteList = new LinkedList<>();
+		List<UpdateCandidate> updateCandidates = new LinkedList<>();
 		ObjectReader jreader = ParaObjectUtils.getJsonReader(Map.class);
 		int idleCount = 0;
 
@@ -111,12 +112,18 @@ public abstract class River implements Runnable {
 							logger.debug("Message from queue: {}", msg);
 							if (Strings.CS.contains(msg, Config._APPID) && Strings.CS.contains(msg, Config._TYPE)) {
 								processedHooks += parseAndCategorizeMessage(jreader.readValue(msg),
-										createList, updateList, deleteList);
+										createList, updateCandidates, deleteList);
 							}
 						}
 					} catch (Exception e) {
 						logger.error("Batch processing operation failed:", e);
 					}
+				}
+
+				// Resolve update candidates in batch before persisting
+				if (!updateCandidates.isEmpty()) {
+					resolveUpdates(updateCandidates, updateList);
+					updateCandidates.clear();
 				}
 
 				if (!createList.isEmpty() || !updateList.isEmpty() || !deleteList.isEmpty() || processedHooks > 0) {
@@ -140,7 +147,7 @@ public abstract class River implements Runnable {
 	}
 
 	private int parseAndCategorizeMessage(Map<String, Object> parsed, List<ParaObject> createList,
-			List<ParaObject> updateList, List<ParaObject> deleteList) {
+			List<UpdateCandidate> updateCandidates, List<ParaObject> deleteList) {
 		String id = parsed.containsKey(Config._ID) ? (String) parsed.get(Config._ID) : null;
 		String type = (String) parsed.get(Config._TYPE);
 		String appid = (String) parsed.get(Config._APPID);
@@ -166,13 +173,54 @@ public abstract class River implements Runnable {
 						createList.add(obj);
 					}
 				} else {
-					updateList.add(ParaObjectUtils.setAnnotatedFields(Para.getDAO().
-							read(appid, id), parsed, Locked.class));
+					// Collect update candidates for batch resolution instead of individual reads
+					updateCandidates.add(new UpdateCandidate(appid, id, parsed));
 				}
 			}
 		}
 		return 0;
 	}
+
+	/**
+	 * Resolves update candidates by batch-reading existing objects from the DAO,
+	 * then merging the incoming changes with the existing data.
+	 * @param candidates list of update candidates collected during message parsing
+	 * @param updateList the list to add resolved update objects to
+	 */
+	@SuppressWarnings("unchecked")
+	private void resolveUpdates(List<UpdateCandidate> candidates, List<ParaObject> updateList) {
+		Map<String, List<UpdateCandidate>> byApp = candidates.stream()
+				.collect(Collectors.groupingBy(UpdateCandidate::appid));
+		for (Map.Entry<String, List<UpdateCandidate>> entry : byApp.entrySet()) {
+			String appid = entry.getKey();
+			List<UpdateCandidate> appCandidates = entry.getValue();
+			List<String> ids = appCandidates.stream().map(UpdateCandidate::id).distinct().toList();
+			Map<String, ParaObject> existing;
+			try {
+				existing = Para.getDAO().readAll(appid, ids, true);
+			} catch (Exception e) {
+				logger.error("Failed to batch-read existing objects for app '{}': {}", appid, e.getMessage());
+				continue;
+			}
+			for (UpdateCandidate c : appCandidates) {
+				ParaObject existingObj = existing.get(c.id());
+				if (existingObj != null) {
+					updateList.add(ParaObjectUtils.setAnnotatedFields(existingObj, c.parsed(), Locked.class));
+				} else {
+					logger.warn("Update candidate '{}' not found in DB for app '{}', skipping.", c.id(), appid);
+				}
+			}
+		}
+	}
+
+	/**
+	 * Record holding an update candidate: an incoming message that should be merged
+	 * with an existing object from the database.
+	 * @param appid the application identifier
+	 * @param id the object identifier
+	 * @param parsed the parsed message payload
+	 */
+	private record UpdateCandidate(String appid, String id, Map<String, Object> parsed) { }
 
 	/**
 	 * Processes the incoming payload pulled from queue. Sends a POST to {@code targetUrl}.
@@ -190,22 +238,24 @@ public abstract class River implements Runnable {
 			String targetUrl = StringUtils.trimToEmpty((String) parsed.get("targetUrl"));
 			String payload = (String) parsed.get("payload");
 			Integer repeatDelivery = Math.abs(NumberUtils.toInt(parsed.get("repeatedDeliveryAttempts") + "", 1));
-			HttpPost postToTarget = new HttpPost(targetUrl);
-			postToTarget.addHeader("User-Agent", "Para Webhook Dispacher " + Para.getVersion());
-			postToTarget.setHeader(HttpHeaders.CONTENT_TYPE, urlEncoded ?
-					"application/x-www-form-urlencoded" : "application/json");
-			postToTarget.setHeader("X-Webhook-Signature", (String) parsed.get("signature"));
-			postToTarget.setHeader("X-Para-Event", (String) parsed.get("event"));
-			if (urlEncoded) {
-				postToTarget.setEntity(new StringEntity("payload=".concat(Utils.urlEncode(payload)),
-						Charset.forName(Para.getConfig().defaultEncoding())));
-			} else {
-				postToTarget.setEntity(new StringEntity(payload, Charset.forName(Para.getConfig().defaultEncoding())));
-			}
 			if (repeatDelivery > 100) {
 				repeatDelivery = 100;
 			}
-			IntStream.range(0, Math.max(1, repeatDelivery)).parallel().forEach(r -> {
+			final int deliveryCount = Math.max(1, repeatDelivery);
+			IntStream.range(0, deliveryCount).parallel().forEach(r -> {
+				// Create a fresh HttpPost per thread to avoid shared mutable state
+				HttpPost postToTarget = new HttpPost(targetUrl);
+				postToTarget.addHeader("User-Agent", "Para Webhook Dispacher " + Para.getVersion());
+				postToTarget.setHeader(HttpHeaders.CONTENT_TYPE, urlEncoded ?
+						"application/x-www-form-urlencoded" : "application/json");
+				postToTarget.setHeader("X-Webhook-Signature", (String) parsed.get("signature"));
+				postToTarget.setHeader("X-Para-Event", (String) parsed.get("event"));
+				if (urlEncoded) {
+					postToTarget.setEntity(new StringEntity("payload=".concat(Utils.urlEncode(payload)),
+							Charset.forName(Para.getConfig().defaultEncoding())));
+				} else {
+					postToTarget.setEntity(new StringEntity(payload, Charset.forName(Para.getConfig().defaultEncoding())));
+				}
 				String status = "";
 				try {
 					status = HTTP.execute(postToTarget, (resp1) -> {
@@ -251,7 +301,11 @@ public abstract class River implements Runnable {
 					indexAllWithRetry(appid, payload);
 					break;
 				case "unindex_all_op":
-					Para.getSearch().unindexAll(appid, getPayloadObjects(appid, payload));
+					List<ParaObject> toUnindex = getPayloadObjects(appid, payload);
+					Para.getSearch().unindexAll(appid, toUnindex);
+					// Clear cache after successful unindex to maintain consistency
+					Para.getCache().removeAll(appid, toUnindex.stream()
+							.map(ParaObject::getId).toList());
 					break;
 				case "rebuild_index_op":
 					// we can't be sure if the app object exists in DB or not, so use the payload to construct the app
@@ -278,7 +332,16 @@ public abstract class River implements Runnable {
 
 	private void persistChanges(List<ParaObject> createList, List<ParaObject> updateList, List<ParaObject> deleteList) {
 		if (!createList.isEmpty()) {
-			Para.getDAO().createAll(createList);
+			// Idempotency protection: filter out objects that already exist in DB
+			// to prevent duplicate creates on queue redelivery
+			List<ParaObject> deduped = deduplicateCreates(createList);
+			if (!deduped.isEmpty()) {
+				Para.getDAO().createAll(deduped);
+			}
+			if (deduped.size() < createList.size()) {
+				logger.info("Skipped {} duplicate create operations (already exist in DB).",
+						createList.size() - deduped.size());
+			}
 		}
 		if (!updateList.isEmpty()) {
 			Para.getDAO().updateAll(updateList);
@@ -291,35 +354,70 @@ public abstract class River implements Runnable {
 		deleteList.clear();
 	}
 
+	/**
+	 * Filters out objects that already exist in the database to prevent duplicate creates.
+	 * Groups objects by appid and does a batch readAll check per app.
+	 * @param createList the list of objects to create
+	 * @return filtered list containing only objects that don't exist yet
+	 */
+	private List<ParaObject> deduplicateCreates(List<ParaObject> createList) {
+		Map<String, List<ParaObject>> byApp = createList.stream()
+				.filter(o -> o.getAppid() != null && o.getId() != null)
+				.collect(Collectors.groupingBy(ParaObject::getAppid));
+		List<ParaObject> deduped = new ArrayList<>();
+		for (Map.Entry<String, List<ParaObject>> entry : byApp.entrySet()) {
+			String appid = entry.getKey();
+			List<ParaObject> appObjects = entry.getValue();
+			try {
+				List<String> ids = appObjects.stream().map(ParaObject::getId).toList();
+				Map<String, ?> existing = Para.getDAO().readAll(appid, ids, false);
+				appObjects.stream()
+						.filter(o -> !existing.containsKey(o.getId()))
+						.forEach(deduped::add);
+			} catch (Exception e) {
+				logger.error("Failed to check for existing objects for app '{}', "
+						+ "proceeding with creates: {}", appid, e.getMessage());
+				// On failure, include all objects (optimistic approach)
+				deduped.addAll(appObjects);
+			}
+		}
+		// Also include any objects without appid or id (they'll be handled by DAO)
+		createList.stream()
+				.filter(o -> o.getAppid() == null || o.getId() == null)
+				.forEach(deduped::add);
+		return deduped;
+	}
+
 	@SuppressWarnings("unchecked")
 	private void indexAllWithRetry(String appid, Object payload) {
 		List<String> ids = (List<String>) Optional.ofNullable(payload).orElse(Collections.emptyList());
-		Para.getCache().removeAll(appid, ids);
 		Map<String, ParaObject> objs = Para.getDAO().readAll(appid, ids, true);
-		Para.getSearch().indexAll(appid, objs.values().stream().filter(v -> v != null).collect(Collectors.toList()));
+		List<ParaObject> found = objs.values().stream().filter(v -> v != null).toList();
+		Para.getSearch().indexAll(appid, found);
+		// Clear cache only after successful indexing to avoid stale reads during failed reindex
+		Para.getCache().removeAll(appid, found.stream().map(ParaObject::getId).toList());
 
 		if (objs.containsValue(null)) {
-			if (pendingIds == null) {
-				pendingIds = new ConcurrentHashMap<>();
-			}
+			Map<String, Integer> appPending = pendingIdsByApp.computeIfAbsent(appid, k -> new ConcurrentHashMap<>());
 			objs.entrySet().stream().filter(entry -> (entry.getValue() == null)).forEachOrdered(entry -> {
-				pendingIds.putIfAbsent(entry.getKey(), 1);
+				appPending.putIfAbsent(entry.getKey(), 1);
 			});
-			logger.debug("Some objects are missing from local database while performing 'index_all_op': {}", pendingIds);
+			logger.debug("Some objects are missing from local database while performing 'index_all_op': {}", appPending);
 			Para.asyncExecute(() -> {
 				try {
 					for (int i = 0; i < Para.getConfig().riverMaxIndexingRetries(); i++) {
 						Thread.sleep(1000L * (i + 1));
 						Map<String, ParaObject> pending = Para.getDAO().readAll(appid,
-								new ArrayList<>(pendingIds.keySet()), true);
-						int pendingCount = pendingIds.size();
+								new ArrayList<>(appPending.keySet()), true);
+						int pendingCount = appPending.size();
 						pending.entrySet().stream().filter(entry -> (entry.getValue() != null)).forEachOrdered(entry -> {
-							pendingIds.remove(entry.getKey());
+							appPending.remove(entry.getKey());
 						});
-						if (pendingCount != pendingIds.size()) {
-							Para.getSearch().indexAll(appid, pending.values().stream().collect(Collectors.toList()));
+						if (pendingCount != appPending.size()) {
+							Para.getSearch().indexAll(appid, pending.values().stream()
+									.filter(v -> v != null).collect(Collectors.toList()));
 						}
-						if (pendingIds.isEmpty()) {
+						if (appPending.isEmpty()) {
 							break;
 						}
 					}
@@ -327,12 +425,12 @@ public abstract class River implements Runnable {
 					logger.info("Retry indexing operation interrupted: {}", ex.getMessage());
 					Thread.currentThread().interrupt();
 				} finally {
-					if (!pendingIds.isEmpty()) {
+					if (!appPending.isEmpty()) {
 						logger.warn("Indexing operation 'index_all_op' failed for objects {} as they "
 								+ "were not found in the database for app '{}'. This may cause the index "
-								+ "to become out of sync or corrupted.", pendingIds, appid);
-						pendingIds.clear();
+								+ "to become out of sync or corrupted.", appPending, appid);
 					}
+					pendingIdsByApp.remove(appid);
 				}
 			});
 		}
@@ -341,7 +439,6 @@ public abstract class River implements Runnable {
 	@SuppressWarnings("unchecked")
 	private List<ParaObject> getPayloadObjects(String appid, Object payload) {
 		List<String> ids = (List<String>) Optional.ofNullable(payload).orElse(Collections.emptyList());
-		Para.getCache().removeAll(appid, ids);
 		return ids.stream().map(id -> {
 			Sysprop s = new Sysprop(id);
 			s.setAppid(appid);
