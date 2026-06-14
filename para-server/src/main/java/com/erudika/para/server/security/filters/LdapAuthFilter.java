@@ -1,0 +1,297 @@
+/*
+ * Copyright 2013-2026 Erudika. https://erudika.com
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * For issues and patches go to: https://github.com/erudika
+ */
+package com.erudika.para.server.security.filters;
+
+import com.erudika.para.core.App;
+import com.erudika.para.core.User;
+import com.erudika.para.core.utils.Config;
+import com.erudika.para.core.utils.CoreUtils;
+import com.erudika.para.core.utils.Para;
+import com.erudika.para.core.utils.ParaObjectUtils;
+import com.erudika.para.core.utils.Utils;
+import com.erudika.para.server.security.AuthenticatedUserDetails;
+import com.erudika.para.server.security.LDAPAuthentication;
+import com.erudika.para.server.security.LDAPAuthenticationProvider.LdapPerson;
+import com.erudika.para.server.security.SecurityUtils;
+import com.erudika.para.server.security.UserAuthentication;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.util.Collections;
+import java.util.Optional;
+import java.util.stream.Collectors;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.Strings;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.security.authentication.AnonymousAuthenticationToken;
+import org.springframework.security.authentication.AuthenticationServiceException;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.authority.AuthorityUtils;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.ldap.userdetails.InetOrgPerson;
+import org.springframework.security.web.authentication.AbstractAuthenticationProcessingFilter;
+
+/**
+ * A filter that handles authentication requests to an LDAP server.
+ * @author Alex Bogdanovski [alex@erudika.com]
+ */
+public class LdapAuthFilter extends AbstractAuthenticationProcessingFilter {
+
+	private static final Logger LOG = LoggerFactory.getLogger(LdapAuthFilter.class);
+
+	/**
+	 * The default filter mapping.
+	 */
+	public static final String LDAP_ACTION = "ldap_auth";
+
+	/**
+	 * Default constructor.
+	 * @param defaultFilterProcessesUrl the url of the filter
+	 */
+	public LdapAuthFilter(final String defaultFilterProcessesUrl) {
+		super(defaultFilterProcessesUrl);
+	}
+
+	/**
+	 * Handles an authentication request.
+	 * @param request HTTP request
+	 * @param response HTTP response
+	 * @return an authentication object that contains the principal object if successful.
+	 * @throws IOException ex
+	 */
+	@Override
+	public Authentication attemptAuthentication(HttpServletRequest request, HttpServletResponse response)
+			throws IOException {
+		final String requestURI = request.getServletPath();
+		UserAuthentication userAuth = null;
+		String username = request.getParameter(Para.getConfig().ldapUsernameParameter());
+		String password = request.getParameter(Para.getConfig().ldapPasswordParameter());
+		String appid = SecurityUtils.getAppidFromAuthRequest(request);
+
+		if (requestURI.endsWith(LDAP_ACTION) && !StringUtils.isBlank(username) && !StringUtils.isBlank(password)) {
+			try	{
+				App app = Para.getDAO().read(App.id(appid == null ? Para.getConfig().getRootAppIdentifier() : appid));
+				Authentication auth = new LDAPAuthentication(username, password).withApp(app);
+				// set authentication in context to avoid warning message from SpringSecurityAuthenticationSource
+				SecurityContextHolder.getContext().setAuthentication(new AnonymousAuthenticationToken("key",
+						"anonymous", AuthorityUtils.createAuthorityList("ROLE_ANONYMOUS")));
+				Authentication ldapAuth = getAuthenticationManager().authenticate(auth);
+				if (ldapAuth != null) {
+					//success!
+					userAuth = getOrCreateUser(app, ldapAuth);
+				} else {
+					LOG.error("LDAP authentication failed.");
+				}
+			} catch (Exception ex) {
+				LOG.info("Failed to authenticate '{}' with LDAP server: {}", username, ex.getMessage());
+				throw new AuthenticationServiceException(ex.getMessage(), ex.getCause());
+			}
+		}
+
+		return SecurityUtils.checkIfActive(userAuth, SecurityUtils.getAuthenticatedUser(userAuth), true);
+	}
+
+	private UserAuthentication getOrCreateUser(App app, Authentication ldapAuth) throws JsonProcessingException {
+		LOG.debug("LDAP response: {}", ldapAuth);
+		if (ldapAuth == null) {
+			return null;
+		}
+		UserAuthentication userAuth = null;
+		User user = new User();
+		LdapPerson profile = (LdapPerson) ldapAuth.getPrincipal();
+
+		if (profile != null && profile.isEnabled() && profile.isAccountNonLocked() && profile.isAccountNonExpired()) {
+			boolean tokenDelegationEnabled = isAccessTokenDelegationEnabled(app);
+			String ldapAccountId = profile.getUsername();
+			String email = profile.getMail();
+			String name = getFullName(app, profile);
+			String adDomain = (String) app.getSetting("security.ldap.active_directory_domain");
+			String memberOf = Optional.ofNullable(profile.getAuthorities()).orElse(Collections.emptyList()).stream().
+					map(ga -> "CN=" + ga.getAuthority()).collect(Collectors.joining(","));
+			String groups = getGroupsFromDN(profile.getDn(), memberOf, app);
+
+			if (StringUtils.isBlank(email)) {
+				if (Utils.isValidEmail(ldapAccountId)) {
+					email = ldapAccountId;
+				} else if (!StringUtils.isBlank(adDomain)) {
+					LOG.warn("The AD doesn't have email attribute. Instead, it uses domain name for email address: "
+							+ "{}@{}.", ldapAccountId, adDomain);
+					email = ldapAccountId.concat("@").concat(adDomain);
+				} else {
+					LOG.warn("Blank email attribute for LDAP user '{}'.", ldapAccountId);
+					email = ldapAccountId + "@paraio.com";
+				}
+			}
+
+			if (Boolean.parseBoolean(app.getSetting("security.ldap.username_as_name") + "")) {
+				name = email.split("@")[0];
+			}
+
+			user.setAppid(getAppid(app));
+			user.setIdentifier(Config.LDAP_PREFIX.concat(ldapAccountId));
+			user.setEmail(email);
+			user = User.readUserForIdentifier(user);
+			if (user == null) {
+				//user is new
+				user = new User();
+				user.setActive(true);
+				user.setAppid(getAppid(app));
+				user.setEmail(email);
+				user.setGroups(groups);
+				user.setName(StringUtils.isBlank(name) ? "No Name" : name);
+				user.setPassword(Utils.generateSecurityToken());
+				user.setPicture(getPicture(app, user, profile));
+				if (tokenDelegationEnabled) {
+					profile.setPhoto(null);
+					user.setIdpAccessToken(getAccessTokenPayload(profile));
+				}
+				user.setIdentifier(Config.LDAP_PREFIX.concat(ldapAccountId));
+				String id = user.create();
+				if (id == null) {
+					throw new AuthenticationServiceException("Authentication failed: cannot create new user.");
+				}
+			} else {
+				if (updateUserInfo(user, getPicture(app, user, profile), email, name, groups, profile, tokenDelegationEnabled)) {
+					user.update();
+				}
+			}
+			userAuth = new UserAuthentication(new AuthenticatedUserDetails(user));
+		} else {
+			LOG.error("Failed to create account - is the LDAP user active? principal={}", profile);
+		}
+		return userAuth;
+	}
+
+	private boolean updateUserInfo(User user, String pic, String email, String name, String groups,
+			LdapPerson profile, boolean tokenDelegationEnabled) throws JsonProcessingException {
+		boolean update = false;
+		if (!Strings.CS.equals(user.getPicture(), pic)) {
+			user.setPicture(pic);
+			update = true;
+		}
+		if (!StringUtils.isBlank(email) && !Strings.CS.equals(user.getEmail(), email)) {
+			user.setEmail(email);
+			update = true;
+		}
+		if (!StringUtils.isBlank(name) && !Strings.CS.equals(user.getName(), name)) {
+			user.setName(name);
+			update = true;
+		}
+		if (!StringUtils.isBlank(groups) && !Strings.CS.equals(user.getGroups(), groups)) {
+			user.setGroups(groups);
+			CoreUtils.getInstance().overwrite(user.getAppid(), user);
+			update = false;
+		}
+		if (tokenDelegationEnabled) {
+			profile.setPhoto(null);
+			user.setIdpAccessToken(getAccessTokenPayload(profile));
+			update = true;
+		}
+		return update;
+	}
+
+	/**
+	 * Calls an external API to get the user profile using a given access token.
+	 * @param app the app where the user will be created, use null for root app
+	 * @param accessToken access token - in the case of LDAP this is should be "uid:password"
+	 * @return {@link UserAuthentication} object or null if something went wrong
+	 * @throws IOException ex
+	 */
+	public UserAuthentication getOrCreateUser(App app, String accessToken) throws IOException {
+		UserAuthentication userAuth = null;
+		if (accessToken != null && accessToken.contains(Para.getConfig().separator())) {
+			String[] parts = accessToken.split(Para.getConfig().separator(), 2);
+			String username = parts[0];
+			String password = parts[1];
+			try {
+				Authentication auth = new LDAPAuthentication(username, password).withApp(app);
+
+				// set authentication in context to avoid warning message from SpringSecurityAuthenticationSource
+				SecurityContextHolder.getContext().setAuthentication(new AnonymousAuthenticationToken("key",
+						"anonymous", AuthorityUtils.createAuthorityList("ROLE_ANONYMOUS")));
+				Authentication ldapAuth = getAuthenticationManager().authenticate(auth);
+				if (ldapAuth != null) {
+					//success!
+					userAuth = getOrCreateUser(app, ldapAuth);
+				}
+			} catch (Exception ex) {
+				LOG.info("Failed to authenticate '{}' with LDAP server: {}", username, ex.getMessage());
+			}
+		}
+		return SecurityUtils.checkIfActive(userAuth, SecurityUtils.getAuthenticatedUser(userAuth), false);
+	}
+
+	private String getAppid(App app) {
+		return (app == null) ? null : app.getAppIdentifier();
+	}
+
+	private String getGroupsFromDN(String dn, String memberOf, App app) {
+		String group = User.Groups.USERS.toString();
+		if (!StringUtils.isBlank(dn)) {
+			String modsNode = (String) app.getSetting("security.ldap.mods_group_node");
+			String adminsNode = (String) app.getSetting("security.ldap.admins_group_node");
+			if (!StringUtils.isBlank(modsNode) && (Strings.CI.contains(dn, modsNode) ||
+					Strings.CI.contains(memberOf, modsNode))) {
+				group = User.Groups.MODS.toString();
+			}
+			if (!StringUtils.isBlank(adminsNode) && (Strings.CI.contains(dn, adminsNode) ||
+					Strings.CI.contains(memberOf, adminsNode))) {
+				group = User.Groups.ADMINS.toString();
+			}
+		}
+		return group;
+	}
+
+	private String getFullName(App app, InetOrgPerson profile) {
+		String attribute = (String) app.getSetting("security.ldap.displayname_attribute");
+		String def = StringUtils.join(profile.getCn(), ", ");
+		String val = switch (attribute.toLowerCase()) {
+			case "displayname" -> profile.getDisplayName();
+			case "username" -> profile.getUsername();
+			case "uid" -> profile.getUid();
+			case "sn" -> profile.getSn();
+			default -> def;
+		};
+		return StringUtils.isBlank(val) ? def : val;
+	}
+
+	private String getAccessTokenPayload(LdapPerson profile) throws JsonProcessingException {
+		byte[] json = ParaObjectUtils.getJsonWriterNoIdent().writeValueAsBytes(profile);
+		return "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." + Utils.base64encURL(json) + ".bogus";
+	}
+
+	private boolean isAccessTokenDelegationEnabled(App app) {
+		return Boolean.parseBoolean(Para.getConfig().getSettingForApp(app, "security.ldap.token_delegation_enabled", "false"));
+	}
+
+	private String getPicture(App app, User user, LdapPerson profile) {
+		byte[] pic = profile.getPhoto();
+		if (pic != null && pic.length > 0) {
+			return Para.getFileStore().store(Optional.
+					ofNullable(getAppid(app)).orElse(Config.PARA) + "/" + user.getId() + ".jpeg", new ByteArrayInputStream(pic));
+		}
+		return getGravatar(user.getEmail());
+	}
+
+	private String getGravatar(String email) {
+		return "https://www.gravatar.com/avatar/" + Utils.md5(email.toLowerCase()) + "?size=400&d=mm&r=pg";
+	}
+}

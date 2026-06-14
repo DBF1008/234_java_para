@@ -1,0 +1,124 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "para.fullname" . }}
+  labels:
+    {{- include "para.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: {{ .Values.updateStrategy | default "RollingUpdate" }}
+  selector:
+    matchLabels:
+      {{- include "para.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "para.selectorLabels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.applicationConf }}
+        configchecksum: {{ include (print .Template.BasePath "/configmap.yaml") . | sha256sum | trunc 63 }}
+        {{- end }}
+      {{- end }}
+    spec:
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
+      volumes:
+        - name: appconfig
+          configMap:
+            name: {{ include "para.fullname" . }}-config
+            items:
+              - key: "application.conf"
+                path: "application.conf"
+        - name: datavol
+          persistentVolumeClaim:
+            claimName: {{ include "para.fullname" . }}-data
+        - name: libvol
+          persistentVolumeClaim:
+            claimName: {{ include "para.fullname" . }}-lib
+      {{- if .Values.downloadInitContainer.enabled }}
+      initContainers:
+        - name: {{ include "para.fullname" . }}-lib-fetch
+          image: "{{ .Values.downloadInitContainer.image.repository }}:{{ .Values.downloadInitContainer.image.tag }}"
+          imagePullPolicy: {{ .Values.downloadInitContainer.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -c
+            - {{ .Values.downloadInitContainer.command | quote }}
+          volumeMounts:
+            - name: libvol
+              mountPath: /para/lib
+          {{- with .Values.downloadInitContainer.env }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.downloadInitContainer.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          # livenessProbe:
+          #   httpGet:
+          #     path: /ping
+          #     port: {{ .Values.service.port }}
+          # readinessProbe:
+          #   httpGet:
+          #     path: /v1/_health
+          #     port: {{ .Values.service.port }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            - name: JAVA_OPTS
+              value: "{{ .Values.javaOpts }}"
+          {{- with .Values.extraEnvs }}
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.rootSecretOverride }}
+            - name: para_root_secret_override
+              value: {{ .stringData.paraSecret | quote }}
+          {{- else }}
+            {{- with .Values.rootSecretExternal }}
+            - name: para_root_secret_override
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "rootSecretExternal.name is required when referencing an existing Secret" .name }}
+                  key: {{ default "paraSecret" .key }}
+            {{- end }}
+          {{- end }}
+          volumeMounts:
+            - name: datavol
+              mountPath: /para/data
+            - name: libvol
+              mountPath: /para/lib
+            - name: appconfig
+              mountPath: /para/config
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+    {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
