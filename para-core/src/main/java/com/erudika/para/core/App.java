@@ -50,7 +50,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
+import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -91,10 +91,10 @@ public class App implements ParaObject, Serializable {
 
 	private static final long serialVersionUID = 1L;
 	private static final String PREFIX = Utils.type(App.class).concat(Para.getConfig().separator());
-	private static final Set<AppCreatedListener> CREATE_LISTENERS = new LinkedHashSet<AppCreatedListener>();
-	private static final Set<AppDeletedListener> DELETE_LISTENERS = new LinkedHashSet<AppDeletedListener>();
-	private static final Set<AppSettingAddedListener> ADD_SETTING_LISTENERS = new LinkedHashSet<>();
-	private static final Set<AppSettingRemovedListener> REMOVE_SETTING_LISTENERS = new LinkedHashSet<>();
+	private static final Set<AppCreatedListener> CREATE_LISTENERS = new CopyOnWriteArraySet<>();
+	private static final Set<AppDeletedListener> DELETE_LISTENERS = new CopyOnWriteArraySet<>();
+	private static final Set<AppSettingAddedListener> ADD_SETTING_LISTENERS = new CopyOnWriteArraySet<>();
+	private static final Set<AppSettingRemovedListener> REMOVE_SETTING_LISTENERS = new CopyOnWriteArraySet<>();
 	private static final Logger logger = LoggerFactory.getLogger(App.class);
 
 	/**
@@ -260,7 +260,8 @@ public class App implements ParaObject, Serializable {
 	}
 
 	/**
-	 * Adds a new setting to the map.
+	 * Adds (or updates) a setting and invokes all {@link AppSettingAddedListener}s.
+	 * Listeners fire only when {@code value} is not null.
 	 * @param name a key
 	 * @param value a value
 	 * @return this
@@ -277,7 +278,7 @@ public class App implements ParaObject, Serializable {
 	}
 
 	/**
-	 * Adds all settings to map of app settings and invokes all {@link AppSettingAddedListener}s.
+	 * Adds all settings to the map of app settings, invoking all {@link AppSettingAddedListener}s once per key.
 	 * @param settings a map settings to add
 	 * @return this
 	 */
@@ -304,7 +305,7 @@ public class App implements ParaObject, Serializable {
 	}
 
 	/**
-	 * Removes a setting from the map.
+	 * Removes a setting and invokes all {@link AppSettingRemovedListener}s, but only if the setting existed.
 	 * @param name the key
 	 * @return this
 	 */
@@ -322,7 +323,7 @@ public class App implements ParaObject, Serializable {
 	}
 
 	/**
-	 * Clears all app settings and invokes each {@link AppSettingRemovedListener}s.
+	 * Clears all app settings, invoking all {@link AppSettingRemovedListener}s once per removed key.
 	 * @return this
 	 */
 	public App clearSettings() {

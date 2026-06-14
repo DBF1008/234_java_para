@@ -19,14 +19,16 @@ package com.erudika.para.server.cache;
 
 import com.erudika.para.core.cache.Cache;
 import com.erudika.para.core.utils.Para;
-import com.erudika.para.core.utils.Utils;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.Expiry;
+import com.github.benmanes.caffeine.cache.RemovalCause;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
@@ -34,7 +36,18 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Default implementation of the {@link Cache} interface using Caffeine.
- * Multitenancy is achieved by caching objects from each app using composite keys: {@code prefix_objectId}.
+ * <p>
+ * Multitenancy is achieved by namespacing every cached object under a deterministic, collision-free
+ * composite key: {@code appid.length() + ":" + appid + ":" + id}. The length prefix makes the key
+ * injective, so no two {@code (appid, id)} pairs can ever collide - this is what keeps one app's
+ * cache (including the default/root app) isolated from another's.
+ * <p>
+ * To support evicting a whole app's entries, the keys of each app are tracked in a side index
+ * ({@code keysByApp}). {@link #removeAll(java.lang.String)} snapshots and drops that index entry and
+ * bulk-invalidates exactly those keys, so an app's cache is truly cleared (no orphaned entries) while
+ * other apps are left untouched. A Caffeine removal listener prunes the index when entries are
+ * evicted by size or time, so the index cannot grow unbounded.
+ *
  * @author Alex Bogdanovski [alex@erudika.com]
  */
 public class CaffeineCache implements Cache {
@@ -42,6 +55,8 @@ public class CaffeineCache implements Cache {
 	private static final Logger logger = LoggerFactory.getLogger(CaffeineCache.class);
 	private static final int DEFAULT_EXPIRATION_MIN = Para.getConfig().caffeineEvictAfterMin();
 	private final com.github.benmanes.caffeine.cache.Cache<String, Object> cache;
+	// appid -> set of composite cache keys belonging to that app (used for correct removeAll(appid))
+	private final ConcurrentHashMap<String, Set<String>> keysByApp = new ConcurrentHashMap<>();
 
 	/**
 	 * Default constructor.
@@ -50,6 +65,7 @@ public class CaffeineCache implements Cache {
 		cache = Caffeine.newBuilder()
 			.maximumSize(Para.getConfig().caffeineCacheSize())
 			.expireAfter(Expiry.creating((k, v) -> Duration.ofMinutes(DEFAULT_EXPIRATION_MIN)))
+			.removalListener(this::onRemoval)
 			.build();
 	}
 
@@ -74,7 +90,9 @@ public class CaffeineCache implements Cache {
 	@Override
 	public <T> void put(String appid, String id, T object) {
 		if (!StringUtils.isBlank(id) && object != null && !StringUtils.isBlank(appid)) {
-			cache.put(key(appid, id), object);
+			String key = key(appid, id);
+			cache.put(key, object);
+			trackKey(appid, key);
 			logger.debug("Cache.put() {} {}", appid, id);
 		}
 	}
@@ -89,6 +107,7 @@ public class CaffeineCache implements Cache {
 			String key = key(appid, id);
 			cache.policy().expireVariably().ifPresent((t) -> {
 				t.put(key, object, ttlSeconds, TimeUnit.SECONDS);
+				trackKey(appid, key);
 			});
 			logger.debug("Cache.put() {} {} ttl {}", appid, id, ttlSeconds);
 		}
@@ -100,7 +119,9 @@ public class CaffeineCache implements Cache {
 			Map<String, T> cleanMap = new LinkedHashMap<>(objects.size());
 			for (Map.Entry<String, T> entry : objects.entrySet()) {
 				if (!StringUtils.isBlank(entry.getKey()) && entry.getValue() != null) {
-					cleanMap.put(key(appid, entry.getKey()), entry.getValue());
+					String key = key(appid, entry.getKey());
+					cleanMap.put(key, entry.getValue());
+					trackKey(appid, key);
 				}
 			}
 			cache.putAll(cleanMap);
@@ -141,15 +162,20 @@ public class CaffeineCache implements Cache {
 	public void remove(String appid, String id) {
 		if (!StringUtils.isBlank(id) && !StringUtils.isBlank(appid)) {
 			logger.debug("Cache.remove() {} {}", appid, id);
-			cache.invalidate(key(appid, id));
+			String key = key(appid, id);
+			cache.invalidate(key);
+			untrackKey(appid, key);
 		}
 	}
 
 	@Override
 	public void removeAll(String appid) {
 		if (!StringUtils.isBlank(appid)) {
+			Set<String> keys = keysByApp.remove(appid);
+			if (keys != null && !keys.isEmpty()) {
+				cache.invalidateAll(keys);
+			}
 			logger.debug("Cache.removeAll() {}", appid);
-			cache.asMap().remove("key_prefix_" + appid);
 		}
 	}
 
@@ -165,8 +191,61 @@ public class CaffeineCache implements Cache {
 		}
 	}
 
+	/**
+	 * Builds the deterministic, collision-free composite key for an object. The length prefix makes
+	 * the mapping injective even if {@code appid} or {@code id} contain the ':' separator.
+	 */
 	private String key(String appid, String id) {
-		return cache.asMap().computeIfAbsent("key_prefix_" + appid, k -> Utils.getNewId()) + "_" + id;
+		return appid.length() + ":" + appid + ":" + id;
+	}
+
+	private void trackKey(String appid, String key) {
+		keysByApp.computeIfAbsent(appid, k -> ConcurrentHashMap.newKeySet()).add(key);
+	}
+
+	private void untrackKey(String appid, String key) {
+		Set<String> keys = keysByApp.get(appid);
+		if (keys != null) {
+			keys.remove(key);
+		}
+	}
+
+	/**
+	 * Keeps the {@code keysByApp} index consistent when Caffeine evicts an entry by size or time.
+	 * If the whole app entry was already dropped by {@link #removeAll(java.lang.String)} this is a no-op.
+	 */
+	private void onRemoval(String key, Object value, RemovalCause cause) {
+		if (key == null) {
+			return;
+		}
+		String appid = appidFromKey(key);
+		if (appid != null) {
+			Set<String> keys = keysByApp.get(appid);
+			if (keys != null) {
+				keys.remove(key);
+			}
+		}
+	}
+
+	/**
+	 * Extracts the appid from a composite key of the form {@code len:appid:id}. Returns null if the
+	 * key is not one we produced.
+	 */
+	private String appidFromKey(String key) {
+		int sep = key.indexOf(':');
+		if (sep <= 0) {
+			return null;
+		}
+		try {
+			int len = Integer.parseInt(key.substring(0, sep));
+			int start = sep + 1;
+			if (len >= 0 && start + len <= key.length()) {
+				return key.substring(start, start + len);
+			}
+		} catch (NumberFormatException e) {
+			return null;
+		}
+		return null;
 	}
 
 	////////////////////////////////////////////////////

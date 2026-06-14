@@ -17,6 +17,7 @@
  */
 package com.erudika.para.core.utils;
 
+import com.erudika.para.core.App;
 import com.erudika.para.core.Linker;
 import com.erudika.para.core.ParaObject;
 import com.erudika.para.core.Votable;
@@ -26,6 +27,7 @@ import com.erudika.para.core.cache.Cache;
 import com.erudika.para.core.cache.MockCache;
 import com.erudika.para.core.email.Emailer;
 import com.erudika.para.core.email.MockEmailer;
+import com.erudika.para.core.listeners.AppSettingsCacheInvalidationListener;
 import com.erudika.para.core.listeners.InitializeListener;
 import com.erudika.para.core.persistence.DAO;
 import com.erudika.para.core.persistence.MockDAO;
@@ -88,6 +90,9 @@ public enum CoreUtils implements InitializeListener {
 			if (dao != null && search != null && cache != null) {
 				logger.info("Loaded new DAO, Search and Cache implementations - {}.", getClassNames(dao, search, cache));
 			}
+			// register the built-in listener that invalidates an app's cached representation on setting changes
+			App.addAppSettingAddedListener(CACHE_INVALIDATION_LISTENER);
+			App.addAppSettingRemovedListener(CACHE_INVALIDATION_LISTENER);
 		}
 
 		private String getClassNames(DAO dao, Search search, Cache cache) {
@@ -434,6 +439,9 @@ public enum CoreUtils implements InitializeListener {
 			return done;
 		}
 	};
+
+	// built-in listener that invalidates an app's cached representation when its settings change
+	private static final AppSettingsCacheInvalidationListener CACHE_INVALIDATION_LISTENER = new AppSettingsCacheInvalidationListener();
 
 	/**
 	 * Provides a default instance using fake DAO, Search and Cache implementations.

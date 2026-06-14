@@ -20,7 +20,10 @@ package com.erudika.para.server.cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.Expiry;
 import java.util.concurrent.TimeUnit;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import org.junit.jupiter.api.Test;
 
@@ -94,6 +97,54 @@ public class CaffeineCacheTest extends CacheTest {
 		assertNull(cache.get("app", "exp2"));
 		assertNull(cache.get("app", "exp3"));
 		assertNull(cache.get("app", "exp4"));
+	}
+
+	@Test
+	public void testRemoveAllActuallyEvicts() {
+		// build a cache with a synchronous executor so cleanUp()/estimatedSize() are deterministic
+		com.github.benmanes.caffeine.cache.Cache<String, Object> caffeine = Caffeine.newBuilder()
+				.executor(Runnable::run)
+				.maximumSize(1000)
+				.build();
+		CaffeineCache cache = new CaffeineCache(caffeine);
+
+		for (int i = 0; i < 5; i++) {
+			cache.put("app1", "id" + i, "v" + i);
+		}
+		for (int i = 0; i < 3; i++) {
+			cache.put("app2", "id" + i, "v" + i);
+		}
+		caffeine.cleanUp();
+		assertEquals(8, caffeine.estimatedSize());
+
+		cache.removeAll("app1");
+		caffeine.cleanUp();
+		// app1's entries are truly evicted (no orphans left behind), app2 is untouched
+		assertEquals(3, caffeine.estimatedSize());
+		for (int i = 0; i < 5; i++) {
+			assertFalse(cache.contains("app1", "id" + i));
+		}
+		for (int i = 0; i < 3; i++) {
+			assertTrue(cache.contains("app2", "id" + i));
+		}
+	}
+
+	@Test
+	public void testNoCrossAppCollisionSameId() {
+		CaffeineCache cache = new CaffeineCache();
+		// same id used in two tenants and the default (root) app must not collide
+		cache.put("app1", "x", "A");
+		cache.put("app2", "x", "B");
+		cache.put("x", "C"); // no-appid overload -> root/default partition
+		assertEquals("A", cache.get("app1", "x"));
+		assertEquals("B", cache.get("app2", "x"));
+		assertEquals("C", cache.get("x"));
+
+		// clearing one tenant leaves the others and the default app intact
+		cache.removeAll("app1");
+		assertNull(cache.get("app1", "x"));
+		assertEquals("B", cache.get("app2", "x"));
+		assertEquals("C", cache.get("x"));
 	}
 
 }

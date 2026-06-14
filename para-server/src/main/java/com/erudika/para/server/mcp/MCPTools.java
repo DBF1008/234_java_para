@@ -4,6 +4,7 @@ import com.erudika.para.core.App;
 import com.erudika.para.core.ParaObject;
 import com.erudika.para.core.User;
 import com.erudika.para.core.annotations.Locked;
+import com.erudika.para.core.listeners.AppSettingsCacheInvalidationListener;
 import com.erudika.para.core.utils.Config;
 import com.erudika.para.core.utils.Pager;
 import com.erudika.para.core.utils.Para;
@@ -370,17 +371,16 @@ public class MCPTools {
 			}
 			logger.info("[MCP] Put app setting for app={} key={}", app.getAppIdentifier(), key);
 
-			Map<String, Object> settings = app.getSettings();
-			// Set or remove the setting
+			// route through the App setting API so the change fires the setting listeners
+			// (cache invalidation + metrics) and persists under the canonical (root) partition
 			if (value == null) {
-				settings.remove(key);
+				app.removeSetting(key);
 				logger.info("[MCP] Removed app setting key={}", key);
 			} else {
-				settings.put(key, value);
+				app.addSetting(key, value);
 				logger.info("[MCP] Set app setting key={} value={}", key, value);
 			}
-			app.setSettings(settings);
-			Para.getDAO().update(app.getAppIdentifier(), app);
+			app.update();
 			return CallToolResult.builder().textContent(List.of(value == null ? "Setting removed." : "Setting updated.")).build();
 		} catch (MCPException e) {
 			throw e;
@@ -708,6 +708,9 @@ public class MCPTools {
 			App app = utils.authApp();
 			String appid = app.getAppIdentifier();
 			Para.getCache().removeAll(appid);
+			// also evict the app's own cached representation (stored in the root partition) so that
+			// configuration/settings changes take effect, not just the tenant's data objects
+			AppSettingsCacheInvalidationListener.invalidate(app);
 			return CallToolResult.builder().textContent(List.of("Cache cleared.")).build();
 		} catch (MCPException e) {
 			throw e;
