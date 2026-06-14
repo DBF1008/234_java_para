@@ -1155,6 +1155,22 @@ public class ParaConfig extends Config {
 	}
 
 	/**
+	 * Enable/disable webhook delivery on this node - the webhooks "worker" role.
+	 * Defaults to the value of {@link #webhooksEnabled()} to preserve single-node behavior.
+	 * @return true if this node should deliver webhook payloads pulled from the queue
+	 */
+	@Documented(position = 725,
+			identifier = "webhooks.worker_enabled",
+			value = "false",
+			type = Boolean.class,
+			category = "River & Queue",
+			description = "Enable/disable webhook delivery on this node (the webhooks 'worker' role). "
+					+ "Defaults to the value of 'webhooks_enabled' to preserve single-node behavior.")
+	public boolean webhooksWorkerEnabled() {
+		return getConfigBoolean("webhooks.worker_enabled", webhooksEnabled());
+	}
+
+	/**
 	 * The polling sleep time, in seconds.
 	 * @return the polling wait time
 	 */
