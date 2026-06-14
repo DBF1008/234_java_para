@@ -117,8 +117,7 @@ public class SecurityConfig {
 	 * @param amazonAuth Amazon auth filter
 	 * @param oauth2Auth generic OAuth2 auth filter
 	 * @param ldapAuth LDAP auth filter
-	 * @param passwordAuth password auth filter
-	 * @param passwordlessAuth passwordless auth filter
+	 * @param jwtAuthFilter JWT restful auth filter
 	 * @throws Exception ex
 	 * @return the security filter chain
 	 */
@@ -135,8 +134,7 @@ public class SecurityConfig {
 			AmazonAuthFilter amazonAuth,
 			GenericOAuth2Filter oauth2Auth,
 			LdapAuthFilter ldapAuth,
-			PasswordAuthFilter passwordAuth,
-			PasswordlessAuthFilter passwordlessAuth) throws Exception {
+			JWTRestfulAuthFilter jwtAuthFilter) throws Exception {
 		String signinPath = Para.getConfig().signinPath();
 		String signoutPath = Para.getConfig().signoutPath();
 		String accessDeniedPath = Para.getConfig().accessDeniedPath();
@@ -193,9 +191,7 @@ public class SecurityConfig {
 		addFilterAfter(getLdapAuthFilter(authManager), BasicAuthenticationFilter.class).
 		addFilterAfter(getSamlAuthFilter(authManager), BasicAuthenticationFilter.class).
 		addFilterAfter(getSamlMetadataFilter(), BasicAuthenticationFilter.class).
-		addFilterBefore(getJWTAuthFilter(authManager, facebookAuth, googleAuth, githubAuth,
-				linkedinAuth, twitterAuth, microsoftAuth, slackAuth, amazonAuth, oauth2Auth,
-				ldapAuth, passwordAuth, passwordlessAuth), RememberMeAuthenticationFilter.class).
+		addFilterBefore(jwtAuthFilter, RememberMeAuthenticationFilter.class).
 		addFilterBefore(new RestAuthFilter(), RememberMeAuthenticationFilter.class).
 		//securityMatcher(API_PATH + "/**"). // DO NOT USE! It restricts which paths are protected by Spring Security
 		build();
@@ -208,6 +204,64 @@ public class SecurityConfig {
 	@Bean
 	public UserDetailsService simpleUserDetailsService() {
 		return new SimpleUserService();
+	}
+
+	/**
+	 * Creates the identity provider registry that maps provider names to their implementations.
+	 * @param passwordAuth password auth filter
+	 * @param passwordlessAuth passwordless auth filter
+	 * @param facebookAuth Facebook auth filter
+	 * @param googleAuth Google auth filter
+	 * @param githubAuth GitHub auth filter
+	 * @param linkedinAuth LinkedIn auth filter
+	 * @param twitterAuth Twitter auth filter
+	 * @param microsoftAuth Microsoft auth filter
+	 * @param slackAuth Slack auth filter
+	 * @param amazonAuth Amazon auth filter
+	 * @param oauth2Auth generic OAuth2 auth filter
+	 * @param ldapAuth LDAP auth filter
+	 * @return the registry
+	 */
+	@Bean
+	public IdentityProviderRegistry identityProviderRegistry(
+			PasswordAuthFilter passwordAuth,
+			PasswordlessAuthFilter passwordlessAuth,
+			FacebookAuthFilter facebookAuth,
+			GoogleAuthFilter googleAuth,
+			GitHubAuthFilter githubAuth,
+			LinkedInAuthFilter linkedinAuth,
+			TwitterAuthFilter twitterAuth,
+			MicrosoftAuthFilter microsoftAuth,
+			SlackAuthFilter slackAuth,
+			AmazonAuthFilter amazonAuth,
+			GenericOAuth2Filter oauth2Auth,
+			LdapAuthFilter ldapAuth) {
+		IdentityProviderRegistry reg = new IdentityProviderRegistry();
+		reg.register(passwordAuth);
+		reg.register(passwordlessAuth);
+		reg.register(facebookAuth);
+		reg.register(googleAuth);
+		reg.register(githubAuth);
+		reg.register(linkedinAuth);
+		reg.register(twitterAuth);
+		reg.register(microsoftAuth);
+		reg.register(slackAuth);
+		reg.register(amazonAuth);
+		reg.register(ldapAuth);
+		// GenericOAuth2Filter serves 3 logical providers via adapters
+		reg.register(new OAuth2IdentityProviderAdapter("oauth2", null, oauth2Auth));
+		reg.register(new OAuth2IdentityProviderAdapter("oauth2second", "second", oauth2Auth));
+		reg.register(new OAuth2IdentityProviderAdapter("oauth2third", "third", oauth2Auth));
+		return reg;
+	}
+
+	/**
+	 * Creates the JWT token lifecycle service.
+	 * @return token service
+	 */
+	@Bean
+	public JWTTokenService jwtTokenService() {
+		return new JWTTokenService();
 	}
 
 	// Tu Du: Make this configurable
@@ -268,37 +322,14 @@ public class SecurityConfig {
 	/**
 	 * Returns the JWT restful authentication filter.
 	 * @param authenticationManager auth manager
-	 * @param twitterAuth Twitter auth filter
-	 * @param googleAuth Google auth filter
-	 * @param githubAuth GitHub auth filter
-	 * @param linkedinAuth LinkedIn auth filter
-	 * @param facebookAuth Facebook auth filter
-	 * @param microsoftAuth Microsoft auth filter
-	 * @param amazonAuth Amazon auth filter
-	 * @param slackAuth Slack auth filter
-	 * @param oauth2Auth generic OAuth2 auth filter
-	 * @param ldapAuth LDAP auth filter
-	 * @param passwordlessAuth passwordless auth filter
-	 * @param passwordAuth password auth filter
+	 * @param registry identity provider registry
+	 * @param tokenService JWT token lifecycle service
 	 * @return filter
 	 */
 	@Bean
 	public JWTRestfulAuthFilter getJWTAuthFilter(AuthenticationManager authenticationManager,
-			FacebookAuthFilter facebookAuth,
-			GoogleAuthFilter googleAuth,
-			GitHubAuthFilter githubAuth,
-			LinkedInAuthFilter linkedinAuth,
-			TwitterAuthFilter twitterAuth,
-			MicrosoftAuthFilter microsoftAuth,
-			SlackAuthFilter slackAuth,
-			AmazonAuthFilter amazonAuth,
-			GenericOAuth2Filter oauth2Auth,
-			LdapAuthFilter ldapAuth,
-			PasswordAuthFilter passwordAuth,
-			PasswordlessAuthFilter passwordlessAuth) {
-		return new JWTRestfulAuthFilter(authenticationManager, facebookAuth, googleAuth, githubAuth,
-				linkedinAuth, twitterAuth, microsoftAuth, slackAuth, amazonAuth, oauth2Auth, ldapAuth,
-				passwordAuth, passwordlessAuth);
+			IdentityProviderRegistry registry, JWTTokenService tokenService) {
+		return new JWTRestfulAuthFilter(authenticationManager, registry, tokenService);
 	}
 
 	/**

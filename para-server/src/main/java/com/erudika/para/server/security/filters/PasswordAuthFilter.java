@@ -22,6 +22,7 @@ import com.erudika.para.core.User;
 import com.erudika.para.core.exceptions.RateLimitException;
 import com.erudika.para.core.utils.Para;
 import com.erudika.para.server.security.AuthenticatedUserDetails;
+import com.erudika.para.server.security.IdentityProvider;
 import com.erudika.para.server.security.SecurityUtils;
 import com.erudika.para.server.security.UserAuthentication;
 import jakarta.servlet.ServletException;
@@ -38,7 +39,7 @@ import org.springframework.security.web.authentication.AbstractAuthenticationPro
  * A filter that handles simple authentication requests with email and password.
  * @author Alex Bogdanovski [alex@erudika.com]
  */
-public class PasswordAuthFilter extends AbstractAuthenticationProcessingFilter {
+public class PasswordAuthFilter extends AbstractAuthenticationProcessingFilter implements IdentityProvider {
 
 	private static final String PASSWORD = "password";
 	private static final String EMAIL = "email";
@@ -47,6 +48,11 @@ public class PasswordAuthFilter extends AbstractAuthenticationProcessingFilter {
 	 * The default filter mapping.
 	 */
 	public static final String PASSWORD_ACTION = "password_auth";
+
+	@Override
+	public String getName() {
+		return "password";
+	}
 
 	/**
 	 * Default constructor.

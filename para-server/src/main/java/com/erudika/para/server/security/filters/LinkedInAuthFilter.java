@@ -24,6 +24,7 @@ import com.erudika.para.core.utils.Para;
 import com.erudika.para.core.utils.ParaObjectUtils;
 import com.erudika.para.core.utils.Utils;
 import com.erudika.para.server.security.AuthenticatedUserDetails;
+import com.erudika.para.server.security.IdentityProvider;
 import com.erudika.para.server.security.SecurityUtils;
 import com.erudika.para.server.security.UserAuthentication;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -55,7 +56,7 @@ import org.springframework.security.web.authentication.AbstractAuthenticationPro
  * A filter that handles authentication requests to LinkedIn.
  * @author Alex Bogdanovski [alex@erudika.com]
  */
-public class LinkedInAuthFilter extends AbstractAuthenticationProcessingFilter {
+public class LinkedInAuthFilter extends AbstractAuthenticationProcessingFilter implements IdentityProvider {
 
 	private static final Logger logger = LoggerFactory.getLogger(LinkedInAuthFilter.class);
 
@@ -73,6 +74,11 @@ public class LinkedInAuthFilter extends AbstractAuthenticationProcessingFilter {
 	 * The default filter mapping.
 	 */
 	public static final String LINKEDIN_ACTION = "linkedin_auth";
+
+	@Override
+	public String getName() {
+		return "linkedin";
+	}
 
 	/**
 	 * Default constructor.

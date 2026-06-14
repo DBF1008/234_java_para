@@ -23,8 +23,10 @@ import com.erudika.para.core.utils.Config;
 import com.erudika.para.core.utils.CoreUtils;
 import com.erudika.para.core.utils.Para;
 import com.erudika.para.server.security.AuthenticatedUserDetails;
+import com.erudika.para.server.security.IdentityProvider;
 import com.erudika.para.server.security.SecurityUtils;
 import com.erudika.para.server.security.UserAuthentication;
+import com.erudika.para.server.rest.RestUtils;
 import com.erudika.para.server.utils.HttpUtils;
 import com.nimbusds.jwt.SignedJWT;
 import jakarta.servlet.ServletException;
@@ -48,7 +50,7 @@ import org.springframework.security.web.authentication.AbstractAuthenticationPro
  * is that users are verified and authenticated externally - LDAP, SAML, custom authentication (SSO).
  * @author Alex Bogdanovski [alex@erudika.com]
  */
-public class PasswordlessAuthFilter extends AbstractAuthenticationProcessingFilter {
+public class PasswordlessAuthFilter extends AbstractAuthenticationProcessingFilter implements IdentityProvider {
 
 	private static final Logger logger = LoggerFactory.getLogger(PasswordlessAuthFilter.class);
 
@@ -56,6 +58,11 @@ public class PasswordlessAuthFilter extends AbstractAuthenticationProcessingFilt
 	 * The default filter mapping.
 	 */
 	public static final String PASSWORDLESS_ACTION = "passwordless_auth";
+
+	@Override
+	public String getName() {
+		return "passwordless";
+	}
 
 	/**
 	 * Default constructor.
@@ -102,16 +109,16 @@ public class PasswordlessAuthFilter extends AbstractAuthenticationProcessingFilt
 				if (redirect) {
 					response.sendRedirect(returnToFailure, HttpStatus.FORBIDDEN.value());
 				} else {
-					response.sendError(HttpStatus.FORBIDDEN.value());
-					response.setStatus(HttpStatus.FORBIDDEN.value());
+					RestUtils.returnStatusResponse(response, HttpServletResponse.SC_UNAUTHORIZED,
+							"App not found for passwordless authentication.");
 				}
 				return null;
 			}
 			auth = SecurityUtils.checkIfActive(userAuth, user, redirect);
 			if (!redirect) {
 				if (auth == null) {
-					response.sendError(HttpStatus.FORBIDDEN.value());
-					response.setStatus(HttpStatus.FORBIDDEN.value());
+					RestUtils.returnStatusResponse(response, HttpServletResponse.SC_UNAUTHORIZED,
+							"Passwordless authentication failed. Check if user is active and token is valid.");
 				} else {
 					response.setContentType(MediaType.TEXT_PLAIN_VALUE);
 					response.setStatus(HttpStatus.OK.value());
@@ -156,6 +163,9 @@ public class PasswordlessAuthFilter extends AbstractAuthenticationProcessingFilt
 	public UserAuthentication getOrCreateUser(App app, String accessToken) {
 		UserAuthentication userAuth = null;
 		User user = new User();
+		if (accessToken == null) {
+			return SecurityUtils.checkIfActive(null, user, false);
+		}
 		String secret = Para.getConfig().getSettingForApp(app, "app_secret_key", app.getSecret());
 		try {
 			SignedJWT jwt = SignedJWT.parse(accessToken);

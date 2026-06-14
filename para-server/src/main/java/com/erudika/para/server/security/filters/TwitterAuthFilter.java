@@ -24,6 +24,7 @@ import com.erudika.para.core.utils.Para;
 import com.erudika.para.core.utils.ParaObjectUtils;
 import com.erudika.para.core.utils.Utils;
 import com.erudika.para.server.security.AuthenticatedUserDetails;
+import com.erudika.para.server.security.IdentityProvider;
 import com.erudika.para.server.security.OAuth1HmacSigner;
 import com.erudika.para.server.security.SecurityUtils;
 import com.erudika.para.server.security.UserAuthentication;
@@ -57,7 +58,7 @@ import org.springframework.security.web.authentication.AbstractAuthenticationPro
  * Twitter auth filter.
  * @author Alex Bogdanovski [alex@erudika.com]
  */
-public class TwitterAuthFilter extends AbstractAuthenticationProcessingFilter {
+public class TwitterAuthFilter extends AbstractAuthenticationProcessingFilter implements IdentityProvider {
 
 	private static final Logger logger = LoggerFactory.getLogger(TwitterAuthFilter.class);
 
@@ -72,6 +73,11 @@ public class TwitterAuthFilter extends AbstractAuthenticationProcessingFilter {
 	 * The default filter mapping.
 	 */
 	public static final String TWITTER_ACTION = "twitter_auth";
+
+	@Override
+	public String getName() {
+		return "twitter";
+	}
 
 	/**
 	 * Default constructor.

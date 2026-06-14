@@ -25,6 +25,7 @@ import com.erudika.para.core.utils.Para;
 import com.erudika.para.core.utils.ParaObjectUtils;
 import com.erudika.para.core.utils.Utils;
 import com.erudika.para.server.security.AuthenticatedUserDetails;
+import com.erudika.para.server.security.IdentityProvider;
 import com.erudika.para.server.security.LDAPAuthentication;
 import com.erudika.para.server.security.LDAPAuthenticationProvider.LdapPerson;
 import com.erudika.para.server.security.SecurityUtils;
@@ -53,7 +54,7 @@ import org.springframework.security.web.authentication.AbstractAuthenticationPro
  * A filter that handles authentication requests to an LDAP server.
  * @author Alex Bogdanovski [alex@erudika.com]
  */
-public class LdapAuthFilter extends AbstractAuthenticationProcessingFilter {
+public class LdapAuthFilter extends AbstractAuthenticationProcessingFilter implements IdentityProvider {
 
 	private static final Logger LOG = LoggerFactory.getLogger(LdapAuthFilter.class);
 
@@ -61,6 +62,11 @@ public class LdapAuthFilter extends AbstractAuthenticationProcessingFilter {
 	 * The default filter mapping.
 	 */
 	public static final String LDAP_ACTION = "ldap_auth";
+
+	@Override
+	public String getName() {
+		return "ldap";
+	}
 
 	/**
 	 * Default constructor.

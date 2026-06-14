@@ -24,6 +24,7 @@ import com.erudika.para.core.utils.Para;
 import com.erudika.para.core.utils.ParaObjectUtils;
 import com.erudika.para.core.utils.Utils;
 import com.erudika.para.server.security.AuthenticatedUserDetails;
+import com.erudika.para.server.security.IdentityProvider;
 import com.erudika.para.server.security.SecurityUtils;
 import com.erudika.para.server.security.UserAuthentication;
 import com.fasterxml.jackson.databind.ObjectReader;
@@ -53,7 +54,7 @@ import org.springframework.security.web.authentication.AbstractAuthenticationPro
  * A filter that handles authentication requests to Google+ API.
  * @author Alex Bogdanovski [alex@erudika.com]
  */
-public class GoogleAuthFilter extends AbstractAuthenticationProcessingFilter {
+public class GoogleAuthFilter extends AbstractAuthenticationProcessingFilter implements IdentityProvider {
 
 	private static final Logger logger = LoggerFactory.getLogger(GoogleAuthFilter.class);
 
@@ -67,6 +68,11 @@ public class GoogleAuthFilter extends AbstractAuthenticationProcessingFilter {
 	 * The default filter mapping.
 	 */
 	public static final String GOOGLE_ACTION = "google_auth";
+
+	@Override
+	public String getName() {
+		return "google";
+	}
 
 	/**
 	 * Default constructor.

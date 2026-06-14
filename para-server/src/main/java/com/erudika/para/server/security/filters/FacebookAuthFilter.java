@@ -24,6 +24,7 @@ import com.erudika.para.core.utils.Para;
 import com.erudika.para.core.utils.ParaObjectUtils;
 import com.erudika.para.core.utils.Utils;
 import com.erudika.para.server.security.AuthenticatedUserDetails;
+import com.erudika.para.server.security.IdentityProvider;
 import com.erudika.para.server.security.SecurityUtils;
 import com.erudika.para.server.security.UserAuthentication;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -51,7 +52,7 @@ import org.springframework.security.web.authentication.AbstractAuthenticationPro
  * A filter that handles authentication requests to Facebook.
  * @author Alex Bogdanovski [alex@erudika.com]
  */
-public class FacebookAuthFilter extends AbstractAuthenticationProcessingFilter {
+public class FacebookAuthFilter extends AbstractAuthenticationProcessingFilter implements IdentityProvider {
 
 	private static final Logger logger = LoggerFactory.getLogger(FacebookAuthFilter.class);
 
@@ -65,6 +66,11 @@ public class FacebookAuthFilter extends AbstractAuthenticationProcessingFilter {
 	 * The default filter mapping.
 	 */
 	public static final String FACEBOOK_ACTION = "facebook_auth";
+
+	@Override
+	public String getName() {
+		return "facebook";
+	}
 
 	/**
 	 * Default constructor.
