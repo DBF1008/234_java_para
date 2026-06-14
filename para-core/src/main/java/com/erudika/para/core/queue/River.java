@@ -29,11 +29,13 @@ import com.erudika.para.core.utils.Utils;
 import com.fasterxml.jackson.databind.ObjectReader;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
@@ -62,7 +64,8 @@ public abstract class River implements Runnable {
 
 	private static final Logger logger = LoggerFactory.getLogger(River.class);
 	private static final CloseableHttpClient HTTP;
-	private static ConcurrentHashMap<String, Integer> pendingIds;
+	private final ConcurrentHashMap<String, Set<String>> pendingIdsByApp = new ConcurrentHashMap<>();
+	private final Set<String> appsWithActiveRetry = ConcurrentHashMap.newKeySet();
 
 	/**
 	 * Protected constructor for subclasses.
@@ -91,38 +94,21 @@ public abstract class River implements Runnable {
 	 * Starts the river.
 	 */
 	public void run() {
-		List<ParaObject> createList = new LinkedList<>();
-		List<ParaObject> updateList = new LinkedList<>();
-		List<ParaObject> deleteList = new LinkedList<>();
-		ObjectReader jreader = ParaObjectUtils.getJsonReader(Map.class);
 		int idleCount = 0;
-
 		try {
 			while (!Thread.interrupted()) {
 				logger.debug("Waiting {}s for messages...", Para.getConfig().queuePollingIntervalSec());
-				int processedHooks = 0;
 				List<String> msgs = Collections.emptyList();
 				if (Para.isHealthy()) {
 					try {
 						msgs = pullMessages();
 						logger.debug("Pulled {} messages from queue.", msgs.size());
-
-						for (final String msg : msgs) {
-							logger.debug("Message from queue: {}", msg);
-							if (Strings.CS.contains(msg, Config._APPID) && Strings.CS.contains(msg, Config._TYPE)) {
-								processedHooks += parseAndCategorizeMessage(jreader.readValue(msg),
-										createList, updateList, deleteList);
-							}
-						}
 					} catch (Exception e) {
-						logger.error("Batch processing operation failed:", e);
+						logger.error("Failed to pull messages from queue:", e);
 					}
 				}
 
-				if (!createList.isEmpty() || !updateList.isEmpty() || !deleteList.isEmpty() || processedHooks > 0) {
-					logger.debug("River summary: {} created, {} updated, {} deleted, {} webhooks delivered.",
-							createList.size(), updateList.size(), deleteList.size(), processedHooks);
-					persistChanges(createList, updateList, deleteList);
+				if (processMessages(msgs) > 0) {
 					idleCount = 0;
 				} else if (msgs.isEmpty()) {
 					idleCount++;
@@ -137,6 +123,43 @@ public abstract class River implements Runnable {
 		} catch (InterruptedException ex) {
 			Thread.currentThread().interrupt();
 		}
+	}
+
+	/**
+	 * Parses, categorizes and persists a batch of messages pulled from the queue. Objects are imported
+	 * through {@link Para#getDAO()} (the managed DAO), which keeps the database, search index and cache
+	 * consistent for create, update and delete operations.
+	 * @param msgs the raw messages pulled from the queue
+	 * @return the number of objects created, updated, deleted plus webhooks delivered
+	 */
+	int processMessages(List<String> msgs) {
+		if (msgs == null || msgs.isEmpty()) {
+			return 0;
+		}
+		List<ParaObject> createList = new LinkedList<>();
+		List<ParaObject> updateList = new LinkedList<>();
+		List<ParaObject> deleteList = new LinkedList<>();
+		ObjectReader jreader = ParaObjectUtils.getJsonReader(Map.class);
+		int processedHooks = 0;
+		try {
+			for (final String msg : msgs) {
+				logger.debug("Message from queue: {}", msg);
+				if (Strings.CS.contains(msg, Config._APPID) && Strings.CS.contains(msg, Config._TYPE)) {
+					processedHooks += parseAndCategorizeMessage(jreader.readValue(msg),
+							createList, updateList, deleteList);
+				}
+			}
+		} catch (Exception e) {
+			logger.error("Batch processing operation failed:", e);
+		}
+
+		int work = createList.size() + updateList.size() + deleteList.size() + processedHooks;
+		if (work > 0) {
+			logger.debug("River summary: {} created, {} updated, {} deleted, {} webhooks delivered.",
+					createList.size(), updateList.size(), deleteList.size(), processedHooks);
+			persistChanges(createList, updateList, deleteList);
+		}
+		return work;
 	}
 
 	private int parseAndCategorizeMessage(Map<String, Object> parsed, List<ParaObject> createList,
@@ -248,7 +271,7 @@ public abstract class River implements Runnable {
 		try {
 			switch (opId) {
 				case "index_all_op":
-					indexAllWithRetry(appid, payload);
+					indexAll(appid, payload);
 					break;
 				case "unindex_all_op":
 					Para.getSearch().unindexAll(appid, getPayloadObjects(appid, payload));
@@ -276,7 +299,7 @@ public abstract class River implements Runnable {
 		return 0;
 	}
 
-	private void persistChanges(List<ParaObject> createList, List<ParaObject> updateList, List<ParaObject> deleteList) {
+	void persistChanges(List<ParaObject> createList, List<ParaObject> updateList, List<ParaObject> deleteList) {
 		if (!createList.isEmpty()) {
 			Para.getDAO().createAll(createList);
 		}
@@ -286,56 +309,134 @@ public abstract class River implements Runnable {
 		if (!deleteList.isEmpty()) {
 			Para.getDAO().deleteAll(deleteList);
 		}
-		createList.clear();
-		updateList.clear();
-		deleteList.clear();
 	}
 
 	@SuppressWarnings("unchecked")
-	private void indexAllWithRetry(String appid, Object payload) {
+	void indexAll(String appid, Object payload) {
 		List<String> ids = (List<String>) Optional.ofNullable(payload).orElse(Collections.emptyList());
-		Para.getCache().removeAll(appid, ids);
-		Map<String, ParaObject> objs = Para.getDAO().readAll(appid, ids, true);
-		Para.getSearch().indexAll(appid, objs.values().stream().filter(v -> v != null).collect(Collectors.toList()));
-
-		if (objs.containsValue(null)) {
-			if (pendingIds == null) {
-				pendingIds = new ConcurrentHashMap<>();
-			}
-			objs.entrySet().stream().filter(entry -> (entry.getValue() == null)).forEachOrdered(entry -> {
-				pendingIds.putIfAbsent(entry.getKey(), 1);
-			});
-			logger.debug("Some objects are missing from local database while performing 'index_all_op': {}", pendingIds);
-			Para.asyncExecute(() -> {
-				try {
-					for (int i = 0; i < Para.getConfig().riverMaxIndexingRetries(); i++) {
-						Thread.sleep(1000L * (i + 1));
-						Map<String, ParaObject> pending = Para.getDAO().readAll(appid,
-								new ArrayList<>(pendingIds.keySet()), true);
-						int pendingCount = pendingIds.size();
-						pending.entrySet().stream().filter(entry -> (entry.getValue() != null)).forEachOrdered(entry -> {
-							pendingIds.remove(entry.getKey());
-						});
-						if (pendingCount != pendingIds.size()) {
-							Para.getSearch().indexAll(appid, pending.values().stream().collect(Collectors.toList()));
-						}
-						if (pendingIds.isEmpty()) {
-							break;
-						}
-					}
-				} catch (InterruptedException ex) {
-					logger.info("Retry indexing operation interrupted: {}", ex.getMessage());
-					Thread.currentThread().interrupt();
-				} finally {
-					if (!pendingIds.isEmpty()) {
-						logger.warn("Indexing operation 'index_all_op' failed for objects {} as they "
-								+ "were not found in the database for app '{}'. This may cause the index "
-								+ "to become out of sync or corrupted.", pendingIds, appid);
-						pendingIds.clear();
-					}
-				}
-			});
+		if (ids.isEmpty()) {
+			return;
 		}
+		// read through the managed DAO so the cache is reconciled with the same snapshot that gets indexed
+		Map<String, ParaObject> objs = Para.getDAO().readAll(appid, ids, true);
+		indexObjects(appid, objs.values());
+		// objects still missing from the database are tracked per app and retried asynchronously;
+		// also invalidate any stale cache entries for them (e.g. objects that were deleted)
+		List<String> missing = ids.stream().filter(id -> objs.get(id) == null).collect(Collectors.toList());
+		if (!missing.isEmpty()) {
+			Para.getCache().removeAll(appid, missing);
+			pendingIdsByApp.computeIfAbsent(appid, k -> ConcurrentHashMap.newKeySet()).addAll(missing);
+			logger.debug("Some objects are missing from local database while performing 'index_all_op': {}", missing);
+			scheduleIndexRetry(appid);
+		}
+	}
+
+	/**
+	 * Indexes a batch of already-persisted objects, applying the same eligibility rules as the managed DAO
+	 * (skipping nulls, non-indexed objects and objects with a negative version).
+	 * @param appid appid
+	 * @param objs the objects to index
+	 */
+	void indexObjects(String appid, Collection<? extends ParaObject> objs) {
+		Para.getSearch().indexAll(appid, objs.stream().
+				filter(o -> o != null && o.getIndexed() && o.getVersion() >= 0).collect(Collectors.toList()));
+	}
+
+	/**
+	 * Runs a single retry round for objects which were missing from the database during 'index_all_op'.
+	 * Only objects that have become available since the previous round are indexed and removed from the
+	 * pending set, which makes repeated rounds and redelivered messages idempotent.
+	 * @param appid appid
+	 * @return true if no objects remain pending for this app
+	 */
+	boolean runIndexRetryRound(String appid) {
+		Set<String> pending = pendingIdsByApp.get(appid);
+		if (pending == null || pending.isEmpty()) {
+			return true;
+		}
+		Map<String, ParaObject> objs = Para.getDAO().readAll(appid, new ArrayList<>(pending), true);
+		List<ParaObject> available = pending.stream().map(objs::get).
+				filter(o -> o != null).collect(Collectors.toList());
+		indexObjects(appid, available);
+		available.forEach(o -> pending.remove(o.getId()));
+		return pending.isEmpty();
+	}
+
+	/**
+	 * Schedules a single asynchronous retry worker per app. Redelivered or concurrent 'index_all_op'
+	 * messages for the same app reuse the running worker instead of spawning duplicates.
+	 * @param appid appid
+	 */
+	private void scheduleIndexRetry(String appid) {
+		if (acquireRetrySlot(appid)) {
+			Para.asyncExecute(() -> retryWorker(appid));
+		}
+	}
+
+	private void retryWorker(String appid) {
+		boolean drained = false;
+		try {
+			for (int i = 0; i < Para.getConfig().riverMaxIndexingRetries(); i++) {
+				Thread.sleep(1000L * (i + 1));
+				if (runIndexRetryRound(appid)) {
+					drained = true;
+					break;
+				}
+			}
+		} catch (InterruptedException ex) {
+			logger.info("Retry indexing operation interrupted: {}", ex.getMessage());
+			Thread.currentThread().interrupt();
+		} finally {
+			releaseRetrySlot(appid);
+			Set<String> pending = pendingIdsByApp.get(appid);
+			if (pending == null || pending.isEmpty()) {
+				pendingIdsByApp.remove(appid);
+			} else if (drained && !Thread.currentThread().isInterrupted()) {
+				// new ids were enqueued after the final drain check - re-arm to cover the race
+				scheduleIndexRetry(appid);
+			} else {
+				logger.warn("Indexing operation 'index_all_op' failed for objects {} as they were not found in "
+						+ "the database for app '{}'. This may cause the index to become out of sync.", pending, appid);
+				pendingIdsByApp.remove(appid);
+			}
+		}
+	}
+
+	/**
+	 * Attempts to reserve the single retry slot for an app.
+	 * @param appid appid
+	 * @return true if the slot was acquired by this caller
+	 */
+	boolean acquireRetrySlot(String appid) {
+		return appsWithActiveRetry.add(appid);
+	}
+
+	/**
+	 * Releases the retry slot for an app, allowing a new retry worker to be scheduled.
+	 * @param appid appid
+	 */
+	void releaseRetrySlot(String appid) {
+		appsWithActiveRetry.remove(appid);
+	}
+
+	/**
+	 * Returns true if there are objects pending an indexing retry for the given app.
+	 * @param appid appid
+	 * @return true if there is pending work
+	 */
+	boolean hasPending(String appid) {
+		Set<String> pending = pendingIdsByApp.get(appid);
+		return pending != null && !pending.isEmpty();
+	}
+
+	/**
+	 * Returns the number of objects pending an indexing retry for the given app.
+	 * @param appid appid
+	 * @return the number of pending objects
+	 */
+	int pendingCount(String appid) {
+		Set<String> pending = pendingIdsByApp.get(appid);
+		return pending == null ? 0 : pending.size();
 	}
 
 	@SuppressWarnings("unchecked")
