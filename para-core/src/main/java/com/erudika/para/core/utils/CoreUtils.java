@@ -17,6 +17,7 @@
  */
 package com.erudika.para.core.utils;
 
+import com.erudika.para.core.App;
 import com.erudika.para.core.Linker;
 import com.erudika.para.core.ParaObject;
 import com.erudika.para.core.Votable;
@@ -184,6 +185,45 @@ public enum CoreUtils implements InitializeListener {
 				return getDao().create(appid, obj);
 			}
 			return null;
+		}
+
+		@Override
+		public void deleteApp(App app) {
+			// the root app is never torn down; nothing to do for a null/unsaved app
+			if (app == null || app.getId() == null || app.isRootApp()) {
+				return;
+			}
+			String appid = app.getAppIdentifier();
+			// 1. CACHE: drop the app's whole cache namespace and evict the app object itself
+			if (!StringUtils.isBlank(appid)) {
+				getCache().removeAll(appid);
+			}
+			getCache().remove(app.getAppid(), app.getId());
+			// 2. SEARCH: remove the app from the index. The Search implementation decides whether
+			// to drop a dedicated index or to unindex the app's documents from a shared index.
+			getSearch().deleteIndex(app);
+			if (!StringUtils.isBlank(appid)) {
+				// 3. DAO: drain and delete every child object of the app, page by page. A fresh
+				// Pager is used each iteration so the scan always starts from the top of the
+				// shrinking table. Bail out if the DAO stops removing objects (no progress).
+				String lastFirstId = null;
+				List<ParaObject> objects = getDao().readPage(appid, new Pager());
+				while (!objects.isEmpty()) {
+					String firstId = objects.get(0).getId();
+					if (firstId != null && firstId.equals(lastFirstId)) {
+						logger.warn("Aborting cleanup of app '{}' - objects are not being removed by the DAO.", appid);
+						break;
+					}
+					lastFirstId = firstId;
+					getDao().deleteAll(appid, objects);
+					objects = getDao().readPage(appid, new Pager());
+				}
+				// 4. FILESTORE: delete all files belonging to the app (namespaced under its id)
+				getFileStore().deleteAll(appid + "/");
+			}
+			// 5. DAO: finally delete the app object itself from its parent (root) table
+			getDao().delete(app.getAppid(), app);
+			logger.info("Cleaned up all data for deleted app '{}'.", app.getId());
 		}
 
 		///////////////////////////////////////
@@ -514,6 +554,15 @@ public enum CoreUtils implements InitializeListener {
 	 * @param emailer {@link Emailer} object
 	 */
 	public abstract void setEmailer(Emailer emailer);
+
+	/**
+	 * Deletes an {@link App} and all of its data. This is the single finalization boundary for app
+	 * deletion: it removes the app's cached objects, drops it from the search index, deletes all of
+	 * its child objects from the {@link DAO}, deletes all of its stored files, and finally deletes
+	 * the app object itself. The root app is never deleted.
+	 * @param app the app to delete
+	 */
+	public abstract void deleteApp(App app);
 
 	///////////////////////////////////////
 	//	    	TAGGING METHODS

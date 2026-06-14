@@ -60,4 +60,12 @@ public class MockFileStore implements FileStore {
 		return false;
 	}
 
+	@Override
+	public boolean deleteAll(String prefix) {
+		if (StringUtils.isBlank(prefix)) {
+			return false;
+		}
+		return fs.keySet().removeIf(path -> path != null && path.startsWith(prefix));
+	}
+
 }

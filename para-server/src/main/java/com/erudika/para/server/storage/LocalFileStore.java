@@ -146,6 +146,37 @@ public class LocalFileStore implements FileStore {
 		return false;
 	}
 
+	@Override
+	public boolean deleteAll(String prefix) {
+		if (Strings.CS.startsWith(prefix, File.separator)) {
+			prefix = prefix.substring(1);
+		}
+		// guard against wiping the entire store when no prefix is given
+		if (StringUtils.isBlank(prefix)) {
+			return false;
+		}
+		return deleteRecursively(new File(folder + prefix));
+	}
+
+	private boolean deleteRecursively(File file) {
+		if (file == null || !file.exists()) {
+			return false;
+		}
+		boolean deleted = false;
+		if (file.isDirectory()) {
+			File[] children = file.listFiles();
+			if (children != null) {
+				for (File child : children) {
+					deleted |= deleteRecursively(child);
+				}
+			}
+		}
+		if (file.canWrite() && file.delete()) {
+			deleted = true;
+		}
+		return deleted;
+	}
+
 	private void readFully(final InputStream input, final byte[] buffer) throws IOException {
 		int offset = 0;
 		int remaining = buffer.length;

@@ -48,4 +48,16 @@ public interface FileStore {
 	 */
 	boolean delete(String path);
 
+	/**
+	 * Deletes all files whose path starts with the given prefix. This is used to wipe all the
+	 * files belonging to a single {@link com.erudika.para.core.App} (which are namespaced under
+	 * the app's identifier) when that app is deleted. A blank prefix is a no-op - implementations
+	 * must never interpret it as "delete everything".
+	 * @param prefix a non-blank file path prefix, e.g. {@code "myapp/"}
+	 * @return true if at least one file was deleted
+	 */
+	default boolean deleteAll(String prefix) {
+		return false;
+	}
+
 }

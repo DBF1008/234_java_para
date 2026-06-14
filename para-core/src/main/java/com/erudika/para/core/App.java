@@ -1162,7 +1162,8 @@ public class App implements ParaObject, Serializable {
 	public void delete() {
 		// root app cannot be deleted
 		if (!isRootApp()) {
-			CoreUtils.getInstance().getDao().delete(getAppid(), this);
+			// single finalization boundary: deletes the app's objects, index docs, cache and files
+			CoreUtils.getInstance().deleteApp(this);
 			logger.info("App '{}' deleted.", getId());
 			for (AppDeletedListener listener : DELETE_LISTENERS) {
 				listener.onAppDeleted(this);
