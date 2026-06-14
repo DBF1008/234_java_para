@@ -58,4 +58,22 @@ public interface Queue {
 	 * This method should always be called  on shutdown.
 	 */
 	void stopPolling();
+
+	/**
+	 * Starts a dedicated async task for polling and delivering webhook payloads.
+	 * Default implementation delegates to {@link #startPolling()} for backward
+	 * compatibility with external Queue plugins.
+	 */
+	default void startWebhookPolling() {
+		startPolling();
+	}
+
+	/**
+	 * Stops the webhook polling async task manually.
+	 * Default implementation delegates to {@link #stopPolling()} for backward
+	 * compatibility with external Queue plugins.
+	 */
+	default void stopWebhookPolling() {
+		stopPolling();
+	}
 }

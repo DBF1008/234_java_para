@@ -22,6 +22,7 @@ import com.erudika.para.core.queue.MockQueue;
 import com.erudika.para.core.queue.Queue;
 import com.erudika.para.core.queue.River;
 import com.erudika.para.core.utils.Para;
+import com.erudika.para.core.webhooks.WebhookDeliveryWorker;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -39,6 +40,7 @@ public class LocalQueue implements Queue {
 	private static final Logger logger = LoggerFactory.getLogger(MockQueue.class);
 	private static final int SLEEP = Para.getConfig().queuePollingWaitSec();
 	private static Future<?> pollingTask;
+	private static Future<?> webhookPollingTask;
 	private static final int MAX_MESSAGES = 10;  //max in bulk
 	private static final int POLLING_INTERVAL = Para.getConfig().queuePollingIntervalSec();
 
@@ -93,8 +95,18 @@ public class LocalQueue implements Queue {
 		stopPollingForMessages();
 	}
 
+	@Override
+	public void startWebhookPolling() {
+		startWebhookPollingForMessages(this);
+	}
+
+	@Override
+	public void stopWebhookPolling() {
+		stopWebhookPollingForMessages();
+	}
+
 	/**
-	 * Starts polling for messages from SQS in a separate thread.
+	 * Starts polling for messages in a separate thread (data import River).
 	 * @param queue a queue instance
 	 */
 	static void startPollingForMessages(Queue queue) {
@@ -128,6 +140,46 @@ public class LocalQueue implements Queue {
 		if (pollingTask != null) {
 			logger.info("Stopping local river...");
 			pollingTask.cancel(true);
+			pollingTask = null;
+		}
+	}
+
+	/**
+	 * Starts polling for webhook messages in a separate thread (webhook delivery worker).
+	 * @param queue a queue instance
+	 */
+	static void startWebhookPollingForMessages(Queue queue) {
+		if (webhookPollingTask == null) {
+			logger.info("Starting webhook delivery worker (polling interval: {}s)", POLLING_INTERVAL);
+			webhookPollingTask = Para.getExecutorService().submit(new WebhookDeliveryWorker() {
+				public List<String> pullMessages() {
+					String msg;
+					ArrayList<String> msgs = new ArrayList<String>(MAX_MESSAGES);
+					do {
+						msg = queue.pull();
+						if (!StringUtils.isBlank(msg)) {
+							msgs.add(msg);
+						}
+					} while (!StringUtils.isBlank(msg) && msgs.size() <= MAX_MESSAGES);
+					return msgs;
+				}
+			});
+			Para.addDestroyListener(new DestroyListener() {
+				public void onDestroy() {
+					stopWebhookPollingForMessages();
+				}
+			});
+		}
+	}
+
+	/**
+	 * Stops the thread that has been polling for webhook messages.
+	 */
+	static void stopWebhookPollingForMessages() {
+		if (webhookPollingTask != null) {
+			logger.info("Stopping webhook delivery worker...");
+			webhookPollingTask.cancel(true);
+			webhookPollingTask = null;
 		}
 	}
 

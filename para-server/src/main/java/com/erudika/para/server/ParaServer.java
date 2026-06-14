@@ -137,10 +137,16 @@ public class ParaServer implements Ordered {
 
 		Para.initialize();
 
-		// this enables the "river" feature - polls the default queue for objects and imports them into Para
-		// additionally, the polling feature is used for implementing a webhooks worker node
-		if ((Para.getConfig().queuePollingEnabled() || Para.getConfig().webhooksEnabled())) {
+		// enables the "river" feature - polls the default queue for objects and imports them into Para
+		if (Para.getConfig().queuePollingEnabled()) {
 			Para.getQueue().startPolling();
+		}
+
+		// enables the webhook delivery worker - polls the default queue for webhook payloads
+		// and delivers them via HTTP POST. When webhooks.worker_enabled is not explicitly set,
+		// it follows webhooks_enabled for backward compatibility.
+		if (Para.getConfig().webhooksWorkerEnabled()) {
+			Para.getQueue().startWebhookPolling();
 		}
 
 		Para.getCustomResourceHandlers().forEach(crh -> {

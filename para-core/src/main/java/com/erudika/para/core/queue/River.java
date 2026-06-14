@@ -20,14 +20,11 @@ package com.erudika.para.core.queue;
 import com.erudika.para.core.App;
 import com.erudika.para.core.ParaObject;
 import com.erudika.para.core.Sysprop;
-import com.erudika.para.core.Webhook;
 import com.erudika.para.core.annotations.Locked;
 import com.erudika.para.core.utils.Config;
 import com.erudika.para.core.utils.Para;
 import com.erudika.para.core.utils.ParaObjectUtils;
-import com.erudika.para.core.utils.Utils;
 import com.fasterxml.jackson.databind.ObjectReader;
-import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedList;
@@ -35,21 +32,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
-import java.util.stream.IntStream;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.Strings;
-import org.apache.commons.lang3.math.NumberUtils;
-import org.apache.hc.client5.http.classic.methods.HttpPost;
-import org.apache.hc.client5.http.config.RequestConfig;
-import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
-import org.apache.hc.client5.http.impl.classic.HttpClientBuilder;
-import org.apache.hc.core5.http.HttpHeaders;
-import org.apache.hc.core5.http.HttpRequest;
-import org.apache.hc.core5.http.HttpResponse;
-import org.apache.hc.core5.http.io.entity.StringEntity;
-import org.apache.hc.core5.http.protocol.HttpContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -61,7 +46,6 @@ import org.slf4j.LoggerFactory;
 public abstract class River implements Runnable {
 
 	private static final Logger logger = LoggerFactory.getLogger(River.class);
-	private static final CloseableHttpClient HTTP;
 	private static ConcurrentHashMap<String, Integer> pendingIds;
 
 	/**
@@ -69,16 +53,6 @@ public abstract class River implements Runnable {
 	 */
 	protected River() {
 		// default constructor
-	}
-
-	static {
-		int timeout = 10;
-		HTTP = HttpClientBuilder.create().
-				setConnectionReuseStrategy((HttpRequest hr, HttpResponse hr1, HttpContext hc) -> false).
-				setDefaultRequestConfig(RequestConfig.custom().
-						setConnectionRequestTimeout(timeout, TimeUnit.SECONDS).
-						build()).
-				build();
 	}
 
 	/**
@@ -100,7 +74,6 @@ public abstract class River implements Runnable {
 		try {
 			while (!Thread.interrupted()) {
 				logger.debug("Waiting {}s for messages...", Para.getConfig().queuePollingIntervalSec());
-				int processedHooks = 0;
 				List<String> msgs = Collections.emptyList();
 				if (Para.isHealthy()) {
 					try {
@@ -110,7 +83,7 @@ public abstract class River implements Runnable {
 						for (final String msg : msgs) {
 							logger.debug("Message from queue: {}", msg);
 							if (Strings.CS.contains(msg, Config._APPID) && Strings.CS.contains(msg, Config._TYPE)) {
-								processedHooks += parseAndCategorizeMessage(jreader.readValue(msg),
+								parseAndCategorizeMessage(jreader.readValue(msg),
 										createList, updateList, deleteList);
 							}
 						}
@@ -119,9 +92,9 @@ public abstract class River implements Runnable {
 					}
 				}
 
-				if (!createList.isEmpty() || !updateList.isEmpty() || !deleteList.isEmpty() || processedHooks > 0) {
-					logger.debug("River summary: {} created, {} updated, {} deleted, {} webhooks delivered.",
-							createList.size(), updateList.size(), deleteList.size(), processedHooks);
+				if (!createList.isEmpty() || !updateList.isEmpty() || !deleteList.isEmpty()) {
+					logger.debug("River summary: {} created, {} updated, {} deleted.",
+							createList.size(), updateList.size(), deleteList.size());
 					persistChanges(createList, updateList, deleteList);
 					idleCount = 0;
 				} else if (msgs.isEmpty()) {
@@ -139,7 +112,7 @@ public abstract class River implements Runnable {
 		}
 	}
 
-	private int parseAndCategorizeMessage(Map<String, Object> parsed, List<ParaObject> createList,
+	private void parseAndCategorizeMessage(Map<String, Object> parsed, List<ParaObject> createList,
 			List<ParaObject> updateList, List<ParaObject> deleteList) {
 		String id = parsed.containsKey(Config._ID) ? (String) parsed.get(Config._ID) : null;
 		String type = (String) parsed.get(Config._TYPE);
@@ -148,11 +121,13 @@ public abstract class River implements Runnable {
 		boolean isWhitelistedType = clazz.equals(Sysprop.class);
 
 		if (!StringUtils.isBlank(appid) && isWhitelistedType) {
-			if ("webhookpayload".equals(type)) {
-				return processWebhookPayload(appid, id, parsed);
-			}
 			if ("indexpayload".equals(type)) {
-				return processIndexPayload(appid, id, parsed);
+				processIndexPayload(appid, id, parsed);
+				return;
+			}
+			// Skip webhook payloads — they are handled by WebhookDeliveryWorker
+			if ("webhookpayload".equals(type)) {
+				return;
 			}
 
 			if (parsed.containsKey("_delete") && "true".equals(parsed.get("_delete")) && id != null) {
@@ -171,65 +146,6 @@ public abstract class River implements Runnable {
 				}
 			}
 		}
-		return 0;
-	}
-
-	/**
-	 * Processes the incoming payload pulled from queue. Sends a POST to {@code targetUrl}.
-	 * @param appid appid
-	 * @param id webhook id
-	 * @param parsed payload with metadata
-	 * @return number of processed webhooks 1 or 0
-	 */
-	protected int processWebhookPayload(String appid, String id, Map<String, Object> parsed) {
-		if (!Para.getConfig().webhooksEnabled() || !parsed.containsKey("targetUrl") || StringUtils.isBlank(id) || parsed.isEmpty()) {
-			return 0;
-		}
-		try {
-			boolean urlEncoded = (boolean) parsed.get("urlEncoded");
-			String targetUrl = StringUtils.trimToEmpty((String) parsed.get("targetUrl"));
-			String payload = (String) parsed.get("payload");
-			Integer repeatDelivery = Math.abs(NumberUtils.toInt(parsed.get("repeatedDeliveryAttempts") + "", 1));
-			HttpPost postToTarget = new HttpPost(targetUrl);
-			postToTarget.addHeader("User-Agent", "Para Webhook Dispacher " + Para.getVersion());
-			postToTarget.setHeader(HttpHeaders.CONTENT_TYPE, urlEncoded ?
-					"application/x-www-form-urlencoded" : "application/json");
-			postToTarget.setHeader("X-Webhook-Signature", (String) parsed.get("signature"));
-			postToTarget.setHeader("X-Para-Event", (String) parsed.get("event"));
-			if (urlEncoded) {
-				postToTarget.setEntity(new StringEntity("payload=".concat(Utils.urlEncode(payload)),
-						Charset.forName(Para.getConfig().defaultEncoding())));
-			} else {
-				postToTarget.setEntity(new StringEntity(payload, Charset.forName(Para.getConfig().defaultEncoding())));
-			}
-			if (repeatDelivery > 100) {
-				repeatDelivery = 100;
-			}
-			IntStream.range(0, Math.max(1, repeatDelivery)).parallel().forEach(r -> {
-				String status = "";
-				try {
-					status = HTTP.execute(postToTarget, (resp1) -> {
-						if (resp1 != null && Math.abs(resp1.getCode() - 200) > 10) {
-							updateFailureCount(appid, id);
-							logger.info("Webhook {} delivery failed! {} responded with code {} {} instead of 2xx.", id,
-									targetUrl, resp1.getCode(), resp1.getReasonPhrase());
-							return resp1.getReasonPhrase();
-						} else {
-							logger.debug("Webhook {} delivered to {} successfully.", id, targetUrl);
-						}
-						return "OK";
-					});
-				} catch (Exception e) {
-					updateFailureCount(appid, id);
-					logger.info("Webhook {} not delivered! {} isn't responding. {}", id, targetUrl, status);
-				}
-			});
-			return 1;
-		} catch (Exception e) {
-			updateFailureCount(appid, id);
-			logger.error("Webhook payload was not delivered:", e);
-		}
-		return 0;
 	}
 
 	/**
@@ -349,25 +265,4 @@ public abstract class River implements Runnable {
 		}).collect(Collectors.toList());
 	}
 
-	private void updateFailureCount(String appid, String id) {
-		// count failed delivieries and disable that webhook object after X failed attempts
-		String countId = "failed_webhook_count" + Para.getConfig().separator() + id;
-		Integer count = Para.getCache().get(appid, countId);
-		if (count == null) {
-			count = 0;
-		}
-		if (count >= (Para.getConfig().maxFailedWebhookAttempts() - 1)) {
-			Webhook hook = Para.getDAO().read(appid, id);
-			if (hook != null) {
-				hook.setActive(false);
-				hook.setTooManyFailures(true);
-				Para.getDAO().update(appid, hook);
-				Para.getCache().remove(appid, countId);
-				logger.info("Webhook {} was disabled - a maximum of {} failed deliveries was reached.",
-						id, Para.getConfig().maxFailedWebhookAttempts());
-			}
-		} else {
-			Para.getCache().put(appid, countId, ++count);
-		}
-	}
 }

@@ -258,6 +258,41 @@ public class ParaConfig extends Config {
 	}
 
 	/**
+	 * Enable/disable the webhook delivery worker on this node.
+	 * When not explicitly set, falls back to {@link #webhooksEnabled()} for backward compatibility.
+	 * Set to {@code false} on API-only nodes that should generate webhook events but delegate
+	 * delivery to worker nodes. Set to {@code true} on dedicated worker nodes.
+	 * @return true if webhook delivery worker is enabled
+	 */
+	@Documented(position = 131,
+			identifier = "webhooks.worker_enabled",
+			value = "false",
+			type = Boolean.class,
+			category = "Core",
+			description = "Enable/disable the webhook delivery worker. "
+				+ "When not explicitly set, follows `webhooks_enabled`. "
+				+ "Set to `false` on API-only nodes; set to `true` on dedicated worker nodes.")
+	public boolean webhooksWorkerEnabled() {
+		// Check system properties and env vars directly to avoid stale cached config values
+		String sys = System.getProperty("para.webhooks.worker_enabled");
+		if (sys != null) {
+			return Boolean.parseBoolean(sys);
+		}
+		String env = System.getenv("PARA_WEBHOOKS_WORKER_ENABLED");
+		if (env == null) {
+			env = System.getenv("para_webhooks_worker_enabled");
+		}
+		if (env != null) {
+			return Boolean.parseBoolean(env);
+		}
+		String val = getConfigParam("webhooks.worker_enabled", null);
+		if (val != null) {
+			return Boolean.parseBoolean(val);
+		}
+		return webhooksEnabled();
+	}
+
+	/**
 	 * Enable/disable the Para RESTful API.
 	 * @return true if API is enabled
 	 */

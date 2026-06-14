@@ -18,24 +18,14 @@
 package com.erudika.para.core;
 
 import com.erudika.para.core.annotations.Stored;
-import com.erudika.para.core.utils.Config;
-import com.erudika.para.core.utils.Pager;
 import com.erudika.para.core.utils.Para;
-import com.erudika.para.core.utils.ParaObjectUtils;
 import com.erudika.para.core.utils.Utils;
+import com.erudika.para.core.webhooks.WebhookEventDispatcher;
 import jakarta.validation.constraints.NotBlank;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.LinkedHashSet;
 import java.util.LinkedList;
 import java.util.List;
-import java.util.Map;
-import java.util.Set;
 import org.apache.commons.lang3.StringUtils;
-import org.apache.commons.lang3.Strings;
 import org.hibernate.validator.constraints.URL;
-import org.slf4j.LoggerFactory;
 
 /**
  * Represents a webhook registration.
@@ -449,10 +439,11 @@ public class Webhook extends Sysprop {
 	public String create() {
 		// check if this is a trigger request for a custom event using POST /webhooks
 		if (!StringUtils.isBlank(triggeredEvent) && customPayload != null) {
-			sendEventPayloadToQueue(getAppid(), "customEvents", triggeredEvent, customPayload);
+			WebhookEventDispatcher dispatcher = new WebhookEventDispatcher();
+			dispatcher.dispatchEvent(getAppid(), "customEvents", triggeredEvent, customPayload);
 			if (!StringUtils.isBlank(secret) && Utils.isValidURL(targetUrl) && !"https://para".equals(targetUrl)) {
-				// support for triggering and delivering the custom event directly without having to register a webhook
-				Para.getQueue().push(buildPayloadAsJSON(triggeredEvent, customPayload));
+				// support for triggering and delivering the custom event directly
+				Para.getQueue().push(dispatcher.buildPayload(this, triggeredEvent, customPayload));
 			}
 			setId("triggered" + Para.getConfig().separator() + triggeredEvent);
 			setName("This webhook object is not persisted and should be discarded.");
@@ -480,33 +471,7 @@ public class Webhook extends Sysprop {
 	 * @return the payload + metadata object as JSON string
 	 */
 	public String buildPayloadAsJSON(String event, Object payload) {
-		Map<String, Object> data = new HashMap<>();
-		data.put(Config._ID, getId());
-		data.put(Config._APPID, getAppid());
-		data.put(Config._TYPE, "webhookpayload");
-		data.put("targetUrl", getTargetUrl());
-		data.put("urlEncoded", getUrlEncoded());
-		data.put("repeatedDeliveryAttempts", getRepeatedDeliveryAttempts());
-		data.put("event", event);
-
-		Map<String, Object> payloadObject = new HashMap<>();
-		payloadObject.put(Config._TIMESTAMP, System.currentTimeMillis());
-		payloadObject.put(Config._APPID, getAppid());
-		payloadObject.put("event", event);
-		if (payload instanceof List) {
-			payloadObject.put("items", payload);
-		} else {
-			payloadObject.put("items", Collections.singletonList(payload));
-		}
-		try {
-			String payloadString = ParaObjectUtils.getJsonWriterNoIdent().writeValueAsString(payloadObject);
-			data.put("payload", payloadString);
-			data.put("signature", Utils.hmacSHA256(payloadString, secret()));
-			return ParaObjectUtils.getJsonWriterNoIdent().writeValueAsString(data);
-		} catch (Exception e) {
-			LoggerFactory.getLogger(Webhook.class).error(null, e);
-		}
-		return "";
+		return new WebhookEventDispatcher().buildPayload(this, event, payload);
 	}
 
 	/**
@@ -517,23 +482,7 @@ public class Webhook extends Sysprop {
 	 * @param payload the payload
 	 */
 	public static void sendEventPayloadToQueue(String appid, String eventName, Object eventValue, Object payload) {
-		if (StringUtils.isBlank(appid)) {
-			return;
-		}
-		Pager p = new Pager(10);
-		p.setSortby("_docid");
-		List<Webhook> webhooks;
-		do {
-			Map<String, Object> terms = new HashMap<>();
-			terms.put(eventName, eventValue);
-			terms.put(Config._APPID, appid);
-			terms.put("active", true);
-			webhooks = Para.getSearch().findTerms(appid, Utils.type(Webhook.class), terms, true, p);
-			webhooks.stream().
-					filter(webhook -> typeFilterMatches(webhook, payload) && propertyFilterMatches(webhook, payload)).
-					forEach(webhook -> Para.getQueue().push(webhook.buildPayloadAsJSON(
-					(eventValue instanceof String) ? (String) eventValue : eventName, payload)));
-		} while (!webhooks.isEmpty());
+		new WebhookEventDispatcher().dispatchEvent(appid, eventName, eventValue, payload);
 	}
 
 	/**
@@ -543,18 +492,7 @@ public class Webhook extends Sysprop {
 	 * @return true if matches
 	 */
 	private static boolean typeFilterMatches(Webhook webhook, Object paraObjects) {
-		if (StringUtils.isBlank(webhook.getTypeFilter()) || App.ALLOW_ALL.equals(webhook.getTypeFilter())) {
-			return true;
-		}
-		if (paraObjects instanceof ParaObject) {
-			return webhook.getTypeFilter().equalsIgnoreCase(((ParaObject) paraObjects).getType());
-		} else if (paraObjects instanceof List) {
-			List<?> list = (List) paraObjects;
-			if (!list.isEmpty() && list.get(0) instanceof ParaObject) {
-				return webhook.getTypeFilter().equalsIgnoreCase(((ParaObject) list.get(0)).getType());
-			}
-		}
-		return false;
+		return WebhookEventDispatcher.typeFilterMatches(webhook, paraObjects);
 	}
 
 	/**
@@ -563,101 +501,8 @@ public class Webhook extends Sysprop {
 	 * @param payload the payload to match against
 	 * @return true if the payload matches the filter
 	 */
-	@SuppressWarnings("unchecked")
 	public static boolean propertyFilterMatches(Webhook webhook, Object payload) {
-		if (StringUtils.isBlank(webhook.getPropertyFilter())) {
-			return true;
-		}
-		if (webhook.getPropertyFilter().contains(":")) {
-			if (payload instanceof ParaObject) {
-				return matchesPropFilter(webhook, (ParaObject) payload);
-			} else if (payload instanceof List) {
-				List<?> list = (List) payload;
-				return !list.isEmpty() && list.stream().anyMatch((pobj) -> matchesPropFilter(webhook, pobj));
-			} else if (payload instanceof Map) {
-				Map<?, ?> props = (Map) payload;
-				return !props.isEmpty() && matchesProp(webhook, (Map<String, Object>) props);
-			}
-		}
-		return false;
+		return WebhookEventDispatcher.propertyFilterMatches(webhook, payload);
 	}
 
-	/**
-	 * Matches a property filter against a Para object.
-	 * @param webhook the webhook
-	 * @param paraObject the object
-	 * @return true if matches
-	 */
-	@SuppressWarnings("unchecked")
-	private static boolean matchesPropFilter(Webhook webhook, Object paraObject) {
-		if (paraObject instanceof ParaObject) {
-			Map<String, Object> props = ParaObjectUtils.getAnnotatedFields((ParaObject) paraObject, null, false);
-			return matchesProp(webhook, props);
-		} else if (paraObject instanceof Map) {
-			return matchesProp(webhook, (Map<String, Object>) paraObject);
-		}
-		return false;
-	}
-
-	/**
-	 * Matches a property filter against a map of properties.
-	 * @param webhook the webhook
-	 * @param props the properties
-	 * @return true if matches
-	 */
-	private static boolean matchesProp(Webhook webhook, Map<String, Object> props) {
-		String propName = StringUtils.substringBefore(webhook.getPropertyFilter(), ":");
-		String propValue = StringUtils.substringAfter(webhook.getPropertyFilter(), ":");
-		Set<String> vals = new LinkedHashSet<>(List.of(StringUtils.split(propValue, ",|", 50)));
-		boolean matchAll = Strings.CS.contains(propValue, ",");
-		if (props.containsKey(propName)) {
-			Object v = props.get(propName);
-			if ("-".equals(propValue) && (v == null || StringUtils.isBlank(v.toString())
-					|| (v instanceof Collection && ((Collection) v).isEmpty()))) {
-				return true;
-			}
-			if (v instanceof Collection) {
-				if (matchAll) {
-					try {
-						return ((Collection) v).containsAll(vals);
-					} catch (Exception e) {
-						return false;
-					}
-				} else {
-					for (String val : vals) {
-						if (((Collection) v).contains(val)) {
-							return true;
-						}
-					}
-				}
-
-			} else {
-				if (vals.size() > 1 && !matchAll) {
-					for (String val : vals) {
-						if (v != null && v.equals(val)) {
-							return true;
-						}
-					}
-				} else {
-					return v != null && v.equals(propValue);
-				}
-			}
-		}
-		return false;
-	}
-
-	/**
-	 * Returns the secret key for the app or the webhook.
-	 * @return secret key
-	 */
-	private String secret() {
-		if ("{{secretKey}}".equals(getSecret())) {
-			// fetch the secret key for that app
-			App app = Para.getDAO().read(App.id(getAppid()));
-			if (app != null) {
-				return app.getSecret();
-			}
-		}
-		return getSecret();
-	}
 }

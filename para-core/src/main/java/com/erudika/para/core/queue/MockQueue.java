@@ -79,4 +79,14 @@ public class MockQueue implements Queue {
 		LoggerFactory.getLogger(MockQueue.class).info("Stopped polling (not really!)...");
 	}
 
+	@Override
+	public void startWebhookPolling() {
+		LoggerFactory.getLogger(MockQueue.class).info("Started webhook polling (not really!)...");
+	}
+
+	@Override
+	public void stopWebhookPolling() {
+		LoggerFactory.getLogger(MockQueue.class).info("Stopped webhook polling (not really!)...");
+	}
+
 }
