@@ -17,11 +17,13 @@
  */
 package com.erudika.para.server;
 
+import com.erudika.para.core.App;
 import com.erudika.para.core.listeners.WebhookIOListener;
 import com.erudika.para.core.rest.CustomResourceHandler;
 import com.erudika.para.core.utils.Config;
 import com.erudika.para.core.utils.Para;
 import com.erudika.para.core.utils.ParaObjectUtils;
+import com.erudika.para.server.cache.AppCacheInvalidationListener;
 import com.erudika.para.server.metrics.MetricsUtils;
 import com.erudika.para.server.utils.HealthUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -128,6 +130,13 @@ public class ParaServer implements Ordered {
 	 */
 	@EventListener({ContextRefreshedEvent.class})
 	protected static void initialize(ContextRefreshedEvent e) {
+		// Register built-in cache invalidation listener for app setting changes.
+		// This ensures the cached App object is evicted immediately when settings change,
+		// so the next read via ManagedDAO reloads the fresh App from the database.
+		AppCacheInvalidationListener cacheListener = new AppCacheInvalidationListener();
+		App.addAppSettingAddedListener(cacheListener);
+		App.addAppSettingRemovedListener(cacheListener);
+
 		Para.addInitListener(HealthUtils.getInstance());
 		Para.addInitListener(MetricsUtils.getInstance());
 

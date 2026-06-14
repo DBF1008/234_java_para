@@ -35,7 +35,10 @@ import static com.erudika.para.core.App.AllowedMethods.READ_WRITE;
 import static com.erudika.para.core.App.AllowedMethods.WRITE;
 import static com.erudika.para.core.App.AllowedMethods.WRITE_ONLY;
 import com.erudika.para.core.utils.Config;
+import com.erudika.para.core.listeners.AppSettingAddedListener;
+import com.erudika.para.core.listeners.AppSettingRemovedListener;
 import static com.erudika.para.core.validation.Constraint.url;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.HashMap;
@@ -384,6 +387,102 @@ public class AppTest {
 		assertFalse(app2.isDeniedExplicitly(u.getId(), res2, "POST"));
 		assertFalse(app2.isAllowedTo(u2.getId(), res2, "PUT"));
 		assertFalse(app2.isDeniedExplicitly(u2.getId(), res2, "PUT"));
+	}
+
+	@Test
+	public void testSetSettings_firesListeners() {
+		App app = new App("test-settings-listeners");
+		app.addSetting("key1", "value1");
+		app.addSetting("key2", "value2");
+
+		List<String> addedKeys = new ArrayList<>();
+		List<String> removedKeys = new ArrayList<>();
+		AppSettingAddedListener addListener = (a, k, v) -> addedKeys.add(k);
+		AppSettingRemovedListener removeListener = (a, k) -> removedKeys.add(k);
+		App.addAppSettingAddedListener(addListener);
+		App.addAppSettingRemovedListener(removeListener);
+		try {
+			// Replace settings: key1 stays (same value), key2 removed, key3 added
+			Map<String, Object> newSettings = new HashMap<>();
+			newSettings.put("key1", "value1");
+			newSettings.put("key3", "value3");
+			app.setSettings(newSettings);
+
+			assertTrue(addedKeys.contains("key3"), "key3 should trigger add listener");
+			assertFalse(addedKeys.contains("key1"), "key1 (unchanged) should NOT trigger add listener");
+			assertTrue(removedKeys.contains("key2"), "key2 should trigger remove listener");
+			assertFalse(removedKeys.contains("key1"), "key1 should NOT trigger remove listener");
+		} finally {
+			App.removeAppSettingAddedListener(addListener);
+			App.removeAppSettingRemovedListener(removeListener);
+		}
+	}
+
+	@Test
+	public void testSetSettings_nullMap_firesRemovalForAll() {
+		App app = new App("test-null-settings");
+		app.addSetting("a", 1);
+		app.addSetting("b", 2);
+
+		List<String> removedKeys = new ArrayList<>();
+		AppSettingRemovedListener removeListener = (a, k) -> removedKeys.add(k);
+		App.addAppSettingRemovedListener(removeListener);
+		try {
+			app.setSettings(null);
+
+			assertTrue(removedKeys.contains("a"), "setting 'a' should trigger removal");
+			assertTrue(removedKeys.contains("b"), "setting 'b' should trigger removal");
+			assertTrue(app.getSettings().isEmpty());
+		} finally {
+			App.removeAppSettingRemovedListener(removeListener);
+		}
+	}
+
+	@Test
+	public void testSetSettings_valueChange_firesAddedListener() {
+		App app = new App("test-value-change");
+		app.addSetting("key1", "oldValue");
+
+		List<String> addedKeys = new ArrayList<>();
+		AppSettingAddedListener addListener = (a, k, v) -> addedKeys.add(k + "=" + v);
+		App.addAppSettingAddedListener(addListener);
+		try {
+			Map<String, Object> newSettings = new HashMap<>();
+			newSettings.put("key1", "newValue");
+			app.setSettings(newSettings);
+
+			assertTrue(addedKeys.contains("key1=newValue"),
+					"Changed value should trigger add listener with new value");
+			assertEquals("newValue", app.getSetting("key1"));
+		} finally {
+			App.removeAppSettingAddedListener(addListener);
+		}
+	}
+
+	@Test
+	public void testAddRemoveSetting_firesListeners() {
+		App app = new App("test-add-remove");
+		List<String> events = new ArrayList<>();
+		AppSettingAddedListener addListener = (a, k, v) -> events.add("add:" + k);
+		AppSettingRemovedListener removeListener = (a, k) -> events.add("remove:" + k);
+		App.addAppSettingAddedListener(addListener);
+		App.addAppSettingRemovedListener(removeListener);
+		try {
+			app.addSetting("x", "1");
+			assertTrue(events.contains("add:x"));
+
+			events.clear();
+			app.removeSetting("x");
+			assertTrue(events.contains("remove:x"));
+
+			// Removing a non-existent key should not fire listener
+			events.clear();
+			app.removeSetting("nonexistent");
+			assertTrue(events.isEmpty(), "Removing non-existent key should not fire listener");
+		} finally {
+			App.removeAppSettingAddedListener(addListener);
+			App.removeAppSettingRemovedListener(removeListener);
+		}
 	}
 
 }

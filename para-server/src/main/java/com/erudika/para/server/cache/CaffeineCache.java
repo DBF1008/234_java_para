@@ -17,6 +17,7 @@
  */
 package com.erudika.para.server.cache;
 
+import com.erudika.para.core.App;
 import com.erudika.para.core.cache.Cache;
 import com.erudika.para.core.utils.Para;
 import com.erudika.para.core.utils.Utils;
@@ -74,7 +75,15 @@ public class CaffeineCache implements Cache {
 	@Override
 	public <T> void put(String appid, String id, T object) {
 		if (!StringUtils.isBlank(id) && object != null && !StringUtils.isBlank(appid)) {
-			cache.put(key(appid, id), object);
+			String cacheKey = key(appid, id);
+			int appTTL = Para.getConfig().caffeineAppTTLSeconds();
+			if (appTTL > 0 && object instanceof App) {
+				// App objects use a dedicated TTL for faster multi-node cache coherence
+				cache.policy().expireVariably().ifPresent(t ->
+						t.put(cacheKey, object, (long) appTTL, TimeUnit.SECONDS));
+			} else {
+				cache.put(cacheKey, object);
+			}
 			logger.debug("Cache.put() {} {}", appid, id);
 		}
 	}
@@ -149,7 +158,15 @@ public class CaffeineCache implements Cache {
 	public void removeAll(String appid) {
 		if (!StringUtils.isBlank(appid)) {
 			logger.debug("Cache.removeAll() {}", appid);
-			cache.asMap().remove("key_prefix_" + appid);
+			// Read the existing prefix WITHOUT creating a new one (computeIfAbsent would create it)
+			Object prefixObj = cache.asMap().get("key_prefix_" + appid);
+			if (prefixObj != null) {
+				String prefix = prefixObj.toString() + "_";
+				// Evict all cached objects that were stored under this app's prefix
+				cache.asMap().keySet().removeIf(key -> key.startsWith(prefix));
+			}
+			// Remove the prefix mapping key itself
+			cache.invalidate("key_prefix_" + appid);
 		}
 	}
 

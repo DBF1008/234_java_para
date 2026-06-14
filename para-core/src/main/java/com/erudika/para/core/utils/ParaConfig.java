@@ -2474,6 +2474,24 @@ public class ParaConfig extends Config {
 		return getConfigInt("caffeine.cache_size", 10000);
 	}
 
+	/**
+	 * TTL for cached {@link com.erudika.para.core.App} objects in seconds. In multi-node deployments,
+	 * other nodes will serve stale App settings for at most this duration after a setting change.
+	 * A value of {@code 0} (default) means App objects use the global {@code caffeine.evict_after_minutes}.
+	 * Set a lower value (e.g. 60) to reduce the multi-node inconsistency window at the cost of more DB reads.
+	 * @return the TTL in seconds, or 0 to use the global cache TTL
+	 */
+	@Documented(position = 1625,
+			identifier = "caffeine.app_ttl_seconds",
+			value = "0",
+			type = Integer.class,
+			category = "Caffeine Cache",
+			description = "TTL for cached App objects in seconds. "
+					+ "Set lower for multi-node deployments. 0 = use global caffeine.evict_after_minutes.")
+	public int caffeineAppTTLSeconds() {
+		return getConfigInt("caffeine.app_ttl_seconds", 0);
+	}
+
 	/* **************************************************************************************************************
 	 * Hazelcast Cache                                                                              Hazelcast Cache *
 	 ****************************************************************************************************************/

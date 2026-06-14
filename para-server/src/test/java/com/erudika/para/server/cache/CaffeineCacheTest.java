@@ -35,6 +35,70 @@ public class CaffeineCacheTest extends CacheTest {
 	}
 
 	@Test
+	public void testRemoveAll_evictsAllEntriesForApp() {
+		CaffeineCache cache = new CaffeineCache();
+		// Populate multiple entries for app1
+		cache.put("app1", "obj1", "value1");
+		cache.put("app1", "obj2", "value2");
+		cache.put("app1", "obj3", "value3");
+		// Populate an entry for app2
+		cache.put("app2", "obj1", "valueA");
+
+		// Verify all entries exist
+		assertNotNull(cache.get("app1", "obj1"));
+		assertNotNull(cache.get("app1", "obj2"));
+		assertNotNull(cache.get("app1", "obj3"));
+		assertNotNull(cache.get("app2", "obj1"));
+
+		// Clear all entries for app1
+		cache.removeAll("app1");
+
+		// All app1 entries must be gone
+		assertNull(cache.get("app1", "obj1"), "app1:obj1 should be evicted after removeAll");
+		assertNull(cache.get("app1", "obj2"), "app1:obj2 should be evicted after removeAll");
+		assertNull(cache.get("app1", "obj3"), "app1:obj3 should be evicted after removeAll");
+		// app2 must be unaffected
+		assertNotNull(cache.get("app2", "obj1"), "app2:obj1 must survive app1's removeAll");
+	}
+
+	@Test
+	public void testRemoveAll_doesNotAffectOtherApps() {
+		CaffeineCache cache = new CaffeineCache();
+		cache.put("tenant1", "user1", "data1");
+		cache.put("tenant2", "user1", "data2");
+		cache.put("tenant3", "user1", "data3");
+
+		cache.removeAll("tenant2");
+
+		assertNotNull(cache.get("tenant1", "user1"), "tenant1 cache must survive");
+		assertNull(cache.get("tenant2", "user1"), "tenant2 cache must be evicted");
+		assertNotNull(cache.get("tenant3", "user1"), "tenant3 cache must survive");
+	}
+
+	@Test
+	public void testRemoveAll_emptyApp_doesNotCreatePrefix() {
+		CaffeineCache cache = new CaffeineCache();
+		// removeAll on a non-existent app should not throw or create state
+		cache.removeAll("nonexistent");
+		// A subsequent put/get should work normally
+		cache.put("nonexistent", "key1", "val1");
+		assertNotNull(cache.get("nonexistent", "key1"));
+	}
+
+	@Test
+	public void testRemoveAll_thenNewPutUsesSamePrefix() {
+		CaffeineCache cache = new CaffeineCache();
+		cache.put("app1", "obj1", "v1");
+		cache.removeAll("app1");
+		// After removeAll, new puts should work correctly
+		cache.put("app1", "obj1", "v2");
+		assertNotNull(cache.get("app1", "obj1"));
+		// And removeAll again should clear the new entries
+		cache.removeAll("app1");
+		assertNull(cache.get("app1", "obj1"));
+	}
+
+	@Test
 	public void testVariableExpiration() {
 		FakeTicker ticker = new FakeTicker();
 		com.github.benmanes.caffeine.cache.Cache<String, Object> caffeine = Caffeine.newBuilder()

@@ -268,10 +268,7 @@ public class App implements ParaObject, Serializable {
 	public App addSetting(String name, Object value) {
 		if (!StringUtils.isBlank(name) && value != null) {
 			getSettings().put(name, value);
-			for (AppSettingAddedListener listener : ADD_SETTING_LISTENERS) {
-				listener.onSettingAdded(this, name, value);
-				logger.debug("Executed {}.onSettingAdded().", listener.getClass().getName());
-			}
+			fireSettingAdded(name, value);
 		}
 		return this;
 	}
@@ -312,10 +309,7 @@ public class App implements ParaObject, Serializable {
 		if (!StringUtils.isBlank(name)) {
 			Object result = getSettings().remove(name);
 			if (result != null) {
-				for (AppSettingRemovedListener listener : REMOVE_SETTING_LISTENERS) {
-					listener.onSettingRemoved(this, name);
-					logger.debug("Executed {}.onSettingRemoved().", listener.getClass().getName());
-				}
+				fireSettingRemoved(name);
 			}
 		}
 		return this;
@@ -347,11 +341,54 @@ public class App implements ParaObject, Serializable {
 	}
 
 	/**
-	 * Overwrites the settings map.
+	 * Overwrites the settings map. Fires {@link AppSettingAddedListener}s for new or changed
+	 * settings and {@link AppSettingRemovedListener}s for settings that were removed.
 	 * @param settings a new map
 	 */
 	public void setSettings(Map<String, Object> settings) {
+		// 1. Snapshot old settings for diff computation
+		Map<String, Object> oldSettings = (this.settings != null)
+				? new LinkedHashMap<>(this.settings) : Collections.emptyMap();
+		// 2. Replace the settings map
 		this.settings = (settings == null) ? null : new ConcurrentHashMap<>(settings);
+		Map<String, Object> newSettings = (this.settings != null)
+				? new LinkedHashMap<>(this.settings) : Collections.emptyMap();
+		// 3. Fire removal events for keys that disappeared
+		for (Map.Entry<String, Object> entry : oldSettings.entrySet()) {
+			if (!newSettings.containsKey(entry.getKey())) {
+				fireSettingRemoved(entry.getKey());
+			}
+		}
+		// 4. Fire add events for new or changed keys
+		for (Map.Entry<String, Object> entry : newSettings.entrySet()) {
+			if (!oldSettings.containsKey(entry.getKey())
+					|| !Objects.equals(oldSettings.get(entry.getKey()), entry.getValue())) {
+				fireSettingAdded(entry.getKey(), entry.getValue());
+			}
+		}
+	}
+
+	/**
+	 * Notifies all registered {@link AppSettingAddedListener}s that a setting was added or updated.
+	 * @param name the setting key
+	 * @param value the setting value
+	 */
+	private void fireSettingAdded(String name, Object value) {
+		for (AppSettingAddedListener listener : ADD_SETTING_LISTENERS) {
+			listener.onSettingAdded(this, name, value);
+			logger.debug("Executed {}.onSettingAdded().", listener.getClass().getName());
+		}
+	}
+
+	/**
+	 * Notifies all registered {@link AppSettingRemovedListener}s that a setting was removed.
+	 * @param name the setting key
+	 */
+	private void fireSettingRemoved(String name) {
+		for (AppSettingRemovedListener listener : REMOVE_SETTING_LISTENERS) {
+			listener.onSettingRemoved(this, name);
+			logger.debug("Executed {}.onSettingRemoved().", listener.getClass().getName());
+		}
 	}
 
 	/**
@@ -1123,12 +1160,32 @@ public class App implements ParaObject, Serializable {
 	}
 
 	/**
+	 * Removes a previously registered app setting added listener.
+	 * @param listener the listener
+	 */
+	public static void removeAppSettingAddedListener(AppSettingAddedListener listener) {
+		if (listener != null) {
+			ADD_SETTING_LISTENERS.remove(listener);
+		}
+	}
+
+	/**
 	 * Registers a new app setting removed listener.
 	 * @param listener the listener
 	 */
 	public static void addAppSettingRemovedListener(AppSettingRemovedListener listener) {
 		if (listener != null) {
 			REMOVE_SETTING_LISTENERS.add(listener);
+		}
+	}
+
+	/**
+	 * Removes a previously registered app setting removed listener.
+	 * @param listener the listener
+	 */
+	public static void removeAppSettingRemovedListener(AppSettingRemovedListener listener) {
+		if (listener != null) {
+			REMOVE_SETTING_LISTENERS.remove(listener);
 		}
 	}
 
