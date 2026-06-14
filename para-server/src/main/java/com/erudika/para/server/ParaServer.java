@@ -23,14 +23,17 @@ import com.erudika.para.core.utils.Config;
 import com.erudika.para.core.utils.Para;
 import com.erudika.para.core.utils.ParaObjectUtils;
 import com.erudika.para.server.metrics.MetricsUtils;
+import com.erudika.para.server.rest.RestUtils;
 import com.erudika.para.server.utils.HealthUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
 import java.io.File;
 import java.io.InputStream;
+import java.util.Arrays;
 import java.util.Map;
 import java.util.Scanner;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -78,9 +81,9 @@ public class ParaServer implements Ordered {
 		System.setProperty("server.port", String.valueOf(Para.getConfig().serverPort()));
 		System.setProperty("server.use-forward-headers", String.valueOf(Para.getConfig().inProduction()));
 
-		if (StringUtils.length(Para.getConfig().serverContextPath()) > 1 &&
-				Para.getConfig().serverContextPath().charAt(0) == '/') {
-			System.setProperty("server.servlet.context-path", Para.getConfig().serverContextPath());
+		String contextPath = RestUtils.getServerContextPath();
+		if (contextPath.length() > 1 && contextPath.charAt(0) == '/') {
+			System.setProperty("server.servlet.context-path", contextPath);
 		}
 		if (Para.getConfig().accessLogEnabled()) {
 			System.setProperty("server.jetty.accesslog.append", "true");
@@ -143,25 +146,45 @@ public class ParaServer implements Ordered {
 			Para.getQueue().startPolling();
 		}
 
-		Para.getCustomResourceHandlers().forEach(crh -> {
-			if (CustomResourceHandler.class.isAssignableFrom(crh.getClass())) {
-				RequestMapping[] anno = crh.getClass().getAnnotationsByType(RequestMapping.class);
-				String paths = "";
-				if (anno != null && anno.length > 0 && anno[0] != null) {
-					RequestMapping ann = anno[0];
-					paths = String.join(",", (ann.path().length == 0) ? ann.value() : ann.path());
-					((ConfigurableApplicationContext) e.getApplicationContext()).getBeanFactory().
-							registerSingleton(crh.getClass().getSimpleName(), crh);
-				}
-				LOG.info("Registered custom resource handler {} at path(s) '{}'.", crh.getClass().getSimpleName(), paths);
-			}
-		});
+		registerCustomResourceHandlers((ConfigurableApplicationContext) e.getApplicationContext());
 
 		boolean ssl = Boolean.parseBoolean(System.getProperty("server.ssl.enabled", "false"));
 		LOG.info("Instance #{} initialized and listening on http{}://localhost:{}{}",
 				Para.getConfig().workerId(), (ssl ? "s" : ""),
 				Para.getConfig().serverPort(),
 				Para.getConfig().serverContextPath());
+	}
+
+	/**
+	 * Registers all custom resource handlers contributed through {@link Para#getCustomResourceHandlers()}.
+	 * A handler that declares a class-level {@link RequestMapping} is registered as a singleton so the
+	 * user-provided instance (and any state it holds) is the one Spring MVC routes to. A handler without
+	 * a class-level mapping is still picked up via component scanning (it is added as an application source
+	 * in {@code builder(...)}) and its routes are defined by method-level mappings.
+	 * <p>
+	 * The path(s) logged for each handler are the effective routes: the normalized server context path
+	 * concatenated with the handler's mapping, so they match what clients must target and sign.
+	 * @param context the refreshed application context
+	 */
+	private static void registerCustomResourceHandlers(ConfigurableApplicationContext context) {
+		String contextPath = RestUtils.getServerContextPath();
+		for (CustomResourceHandler handler : Para.getCustomResourceHandlers()) {
+			Class<?> handlerClass = handler.getClass();
+			RequestMapping[] anno = handlerClass.getAnnotationsByType(RequestMapping.class);
+			if (anno.length > 0 && anno[0] != null) {
+				RequestMapping mapping = anno[0];
+				String[] mappingPaths = (mapping.path().length == 0) ? mapping.value() : mapping.path();
+				// register the user-provided instance so it (not a fresh component-scanned copy) is used
+				context.getBeanFactory().registerSingleton(handlerClass.getSimpleName(), handler);
+				String routes = Arrays.stream(mappingPaths).
+						map(p -> contextPath + (p.startsWith("/") ? p : "/" + p)).
+						collect(Collectors.joining(", "));
+				LOG.info("Registered custom resource handler {} at path(s) '{}'.", handlerClass.getSimpleName(), routes);
+			} else {
+				LOG.info("Registered custom resource handler {} (routes defined by method-level mappings under '{}').",
+						handlerClass.getSimpleName(), contextPath.isEmpty() ? "/" : contextPath);
+			}
+		}
 	}
 
 	/**

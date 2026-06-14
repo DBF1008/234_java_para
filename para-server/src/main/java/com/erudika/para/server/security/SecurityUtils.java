@@ -25,6 +25,7 @@ import com.erudika.para.core.utils.Config;
 import com.erudika.para.core.utils.CoreUtils;
 import com.erudika.para.core.utils.Para;
 import com.erudika.para.core.utils.Utils;
+import com.erudika.para.server.rest.RestUtils;
 import com.erudika.para.server.security.filters.PasswordlessAuthFilter;
 import com.erudika.para.server.security.filters.SAMLAuthFilter;
 import com.nimbusds.jose.JOSEException;
@@ -415,8 +416,11 @@ public final class SecurityUtils {
 			params.put(param.getKey(), param.getValue()[0]);
 		}
 
-		String path = incoming.getRequestURI(); // DO NOT USE req.getServletPath() here!
-		String endpoint = Strings.CI.removeEnd(incoming.getRequestURL().toString(), path);
+		// Request path/endpoint normalization for the signature base string is centralized
+		// in RestUtils: the full request URI is used (context path included) and the endpoint
+		// is the URL minus that path. Never use req.getServletPath() here - see RestUtils.
+		String path = RestUtils.getSignedRequestPath(incoming);
+		String endpoint = RestUtils.getSignedRequestEndpoint(incoming);
 		String httpMethod = incoming.getMethod();
 		InputStream entity;
 		try {

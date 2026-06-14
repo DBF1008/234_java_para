@@ -8,6 +8,7 @@ import com.erudika.para.core.utils.Config;
 import com.erudika.para.core.utils.Para;
 import com.erudika.para.core.utils.ParaConfig;
 import com.erudika.para.core.utils.ParaObjectUtils;
+import com.erudika.para.server.rest.RestUtils;
 import com.erudika.para.server.security.SecurityUtils;
 import com.erudika.para.server.utils.HealthUtils;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -105,7 +106,7 @@ public class MCPUtils {
 		ParaConfig config = Para.getConfig();
 		Map<String, Object> snapshot = new LinkedHashMap<>();
 		Map<String, Object> server = new LinkedHashMap<>();
-		String contextPath = normalizeContextPath(config.serverContextPath());
+		String contextPath = RestUtils.getServerContextPath();
 		server.put("port", config.serverPort());
 		server.put("healthy", HealthUtils.getInstance().isHealthy());
 		server.put("version", Para.getVersion());
@@ -281,13 +282,6 @@ public class MCPUtils {
 			return DEFAULT_SEARCH_LIMIT;
 		}
 		return Math.min(limit, MAX_SEARCH_RESULTS);
-	}
-
-	private String normalizeContextPath(String contextPath) {
-		if (StringUtils.isBlank(contextPath) || "/".equals(contextPath)) {
-			return "";
-		}
-		return contextPath;
 	}
 
 	private Map<String, Object> resolveMcpTransportMetadata(int serverPort) {

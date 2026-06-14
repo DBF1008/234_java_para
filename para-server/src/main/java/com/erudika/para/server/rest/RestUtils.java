@@ -148,24 +148,97 @@ public final class RestUtils {
 
 	/**
 	 * Extracts the resource name, for example '/v1/_resource/path'
-	 * returns '_resource/path'.
+	 * returns '_resource/path'. The servlet context path (if any) and the API
+	 * version prefix (e.g. '/v1') are both stripped, so the returned path does
+	 * not change when the server is mounted under a different context path. This
+	 * is the canonical resource identifier used for permission checks; keep it in
+	 * sync with the signing semantics in {@link #getSignedRequestPath(HttpServletRequest)}.
 	 * @param request a request
 	 * @return the resource path
 	 */
 	public static String extractResourcePath(HttpServletRequest request) {
-		if (request == null || request.getRequestURI().length() <= 3) {
+		if (request == null) {
 			return "";
 		}
-		// get request path, strip first slash '/'
-		String uri = request.getRequestURI().substring(1);
-		// skip to the end of API version prefix '/v1/'
+		String uri = StringUtils.trimToEmpty(request.getRequestURI());
+		// strip the servlet context path (e.g. "/para") so the resource path is
+		// independent of the context path the server happens to be deployed under
+		String contextPath = StringUtils.trimToEmpty(request.getContextPath());
+		if (!contextPath.isEmpty() && Strings.CS.startsWith(uri, contextPath)) {
+			uri = uri.substring(contextPath.length());
+		}
+		if (uri.length() <= 3) {
+			// nothing past the API version prefix (e.g. "", "/", "/v1")
+			return "";
+		}
+		// strip the leading slash, then skip past the API version segment (e.g. "v1/")
+		if (uri.charAt(0) == '/') {
+			uri = uri.substring(1);
+		}
 		int start = uri.indexOf('/');
-
 		if (start >= 0 && start + 1 < uri.length()) {
 			return uri.substring(start + 1);
 		} else {
 			return "";
 		}
+	}
+
+	/**
+	 * Returns the normalized servlet context path configured for this server.
+	 * A blank value or "/" is normalized to an empty string, so callers can
+	 * safely concatenate it with a resource path. This is the single source of
+	 * truth for context path normalization.
+	 * @return the normalized context path, e.g. "/para" or "" (never null)
+	 */
+	public static String getServerContextPath() {
+		return normalizeContextPath(Para.getConfig().serverContextPath());
+	}
+
+	/**
+	 * Normalizes a servlet context path: a blank value or "/" becomes an empty
+	 * string; any other value is returned unchanged.
+	 * @param contextPath a raw context path (may be null)
+	 * @return the normalized context path (never null)
+	 */
+	public static String normalizeContextPath(String contextPath) {
+		if (StringUtils.isBlank(contextPath) || "/".equals(contextPath)) {
+			return "";
+		}
+		return contextPath;
+	}
+
+	/**
+	 * Returns the request path used as the resource part of the AWS V4 signature
+	 * base string. This is the full request URI <b>including</b> the servlet
+	 * context path, exactly as the client signed it.
+	 * <p>
+	 * Do NOT use {@link HttpServletRequest#getServletPath()} here: it strips the
+	 * context path, which would make the server compute a different base string
+	 * than the client whenever the server runs under a context path or behind a
+	 * proxy prefix, silently breaking signature verification.
+	 * @param request a request
+	 * @return the full request URI, or "" if the request is null
+	 */
+	public static String getSignedRequestPath(HttpServletRequest request) {
+		if (request == null) {
+			return "";
+		}
+		return StringUtils.trimToEmpty(request.getRequestURI());
+	}
+
+	/**
+	 * Returns the endpoint (scheme, host and optional port) used together with
+	 * {@link #getSignedRequestPath(HttpServletRequest)} to rebuild the AWS V4
+	 * signature base string. It is the request URL with the signed request path
+	 * removed.
+	 * @param request a request
+	 * @return the endpoint, e.g. "https://example.com", or "" if the request is null
+	 */
+	public static String getSignedRequestEndpoint(HttpServletRequest request) {
+		if (request == null) {
+			return "";
+		}
+		return Strings.CI.removeEnd(request.getRequestURL().toString(), getSignedRequestPath(request));
 	}
 
 	/**

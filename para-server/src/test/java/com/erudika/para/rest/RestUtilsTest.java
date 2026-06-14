@@ -202,6 +202,26 @@ public class RestUtilsTest {
 		// new feature - specific resource paths
 		Mockito.when(req.getRequestURI()).thenReturn("/v2.0/posts/123");
 		assertEquals("posts/123", extractResourcePath(req));
+
+		// the servlet context path must be stripped together with the API version prefix, so the
+		// resource path (used for permission checks) is the same regardless of the context path
+		Mockito.when(req.getContextPath()).thenReturn("/para");
+		Mockito.when(req.getRequestURI()).thenReturn("/para/v1/_test/path/id");
+		assertEquals("_test/path/id", extractResourcePath(req));
+
+		Mockito.when(req.getRequestURI()).thenReturn("/para/v1/posts/123");
+		assertEquals("posts/123", extractResourcePath(req));
+
+		Mockito.when(req.getRequestURI()).thenReturn("/para/v1");
+		assertEquals("", extractResourcePath(req));
+
+		Mockito.when(req.getRequestURI()).thenReturn("/para/v1/");
+		assertEquals("", extractResourcePath(req));
+
+		// nested context path
+		Mockito.when(req.getContextPath()).thenReturn("/a/b");
+		Mockito.when(req.getRequestURI()).thenReturn("/a/b/v1/_test");
+		assertEquals("_test", extractResourcePath(req));
 	}
 
 	@Test
