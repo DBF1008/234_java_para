@@ -1,0 +1,81 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+	<parent>
+		<groupId>com.erudika</groupId>
+		<artifactId>para-parent</artifactId>
+		<version>1.54.8-SNAPSHOT</version>
+	</parent>
+
+	<artifactId>para-client</artifactId>
+	<packaging>jar</packaging>
+	<name>para-client</name>
+
+	<dependencies>
+		<dependency>
+			<groupId>com.erudika</groupId>
+			<artifactId>para-core</artifactId>
+			<version>${project.version}</version>
+		</dependency>
+	</dependencies>
+
+	<build>
+		<plugins>
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-checkstyle-plugin</artifactId>
+				<version>3.6.0</version>
+				<dependencies>
+					<dependency>
+						<groupId>com.puppycrawl.tools</groupId>
+						<artifactId>checkstyle</artifactId>
+						<version>9.2</version>
+					</dependency>
+				</dependencies>
+				<executions>
+					<execution>
+						<id>validate-server</id>
+						<phase>validate</phase>
+						<configuration>
+							<skip>${skipTests}</skip>
+							<configLocation>../para-core/src/main/resources/checkstyle.xml</configLocation>
+							<consoleOutput>true</consoleOutput>
+							<failsOnError>true</failsOnError>
+							<linkXRef>false</linkXRef>
+						</configuration>
+						<goals>
+							<goal>check</goal>
+						</goals>
+					</execution>
+				</executions>
+			</plugin>
+
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-javadoc-plugin</artifactId>
+				<version>3.12.0</version>
+				<configuration>
+					<sourcepath>src/main/java</sourcepath>
+					<!--<stylesheetfile>para-core/src/main/javadoc/stylesheet.css</stylesheetfile>-->
+					<show>public</show>
+					<quiet>true</quiet>
+					<!--<docfilessubdirs>true</docfilessubdirs>-->
+				</configuration>
+			</plugin>
+
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-jar-plugin</artifactId>
+				<version>3.5.0</version>
+				<configuration>
+					<archive>
+						<manifestEntries>
+							<Automatic-Module-Name>com.erudika.para.client</Automatic-Module-Name>
+						</manifestEntries>
+					</archive>
+				</configuration>
+			</plugin>
+		</plugins>
+	</build>
+
+</project>
