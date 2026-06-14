@@ -66,9 +66,17 @@ public final class Signer {
 
 	/**
 	 * Signs a request using AWS signature V4.
+	 *
+	 * <p><b>Path semantics:</b> The {@code resourcePath} must be the full URI path as it appears
+	 * in the request line, including any context path. For example, if the server runs with context
+	 * path "/myapp", a request to "/myapp/v1/users" should use resourcePath="/myapp/v1/users".
+	 * The server verifies signatures using {@code HttpServletRequest.getRequestURI()} which also
+	 * includes the context path, ensuring both sides compute the same canonical string.</p>
+	 *
 	 * @param httpMethod GET/POST/PUT... etc.
-	 * @param endpoint the hostname of the API server
-	 * @param resourcePath the path of the resource (starting from root e.g. "/path/to/res")
+	 * @param endpoint the hostname of the API server (e.g., "https://example.com")
+	 * @param resourcePath the full URI path of the resource, including any context path
+	 *        (e.g., "/v1/users" or "/myapp/v1/users" with context path)
 	 * @param headers the headers map
 	 * @param params the params map
 	 * @param entity the entity object or null
@@ -84,10 +92,10 @@ public final class Signer {
 	}
 
 	/**
-	 * Signs a request using AWS signature V4.
+	 * Signs a request using AWS signature V4 with configurable service name, region, and encoding.
 	 * @param httpMethod GET/POST/PUT... etc.
 	 * @param endpoint the hostname of the API server
-	 * @param resourcePath the path of the resource (starting from root e.g. "/path/to/res")
+	 * @param resourcePath the full URI path of the resource, including any context path
 	 * @param headers the headers map
 	 * @param params the params map
 	 * @param entity the entity object or null
@@ -95,7 +103,7 @@ public final class Signer {
 	 * @param secretKey the app's secret key
 	 * @param serviceName service name override
 	 * @param region region override
-	 * @param doubleUrlEncodePath if true, resouce path will be double url-encoded
+	 * @param doubleUrlEncodePath if true, resource path will be double url-encoded
 	 * @return a signed request. The actual signature is inside the {@code Authorization} header.
 	 */
 	public Map<String, String> sign(String httpMethod, String endpoint, String resourcePath,
@@ -177,7 +185,7 @@ public final class Signer {
 	 * @param secretKey secret key
 	 * @param httpMethod the method (GET, POST...)
 	 * @param endpointURL protocol://host:port
-	 * @param reqPath the API resource path relative to the endpointURL
+	 * @param reqPath the API resource path (must include the full URI path including context path)
 	 * @param headers headers map
 	 * @param params parameters map
 	 * @param jsonEntity an object serialized to JSON byte array (payload), could be null

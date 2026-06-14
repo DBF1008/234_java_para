@@ -23,11 +23,13 @@ import com.erudika.para.core.utils.Config;
 import com.erudika.para.core.utils.Para;
 import com.erudika.para.core.utils.ParaObjectUtils;
 import com.erudika.para.server.metrics.MetricsUtils;
+import com.erudika.para.server.security.RestRequestMatcher;
 import com.erudika.para.server.utils.HealthUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
 import java.io.File;
 import java.io.InputStream;
+import java.util.List;
 import java.util.Map;
 import java.util.Scanner;
 import java.util.concurrent.ConcurrentHashMap;
@@ -48,7 +50,6 @@ import org.springframework.context.event.ContextRefreshedEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.core.Ordered;
 import org.springframework.http.HttpStatus;
-import org.springframework.web.bind.annotation.RequestMapping;
 
 /**
  * Para modules are initialized and destroyed from here.
@@ -145,15 +146,11 @@ public class ParaServer implements Ordered {
 
 		Para.getCustomResourceHandlers().forEach(crh -> {
 			if (CustomResourceHandler.class.isAssignableFrom(crh.getClass())) {
-				RequestMapping[] anno = crh.getClass().getAnnotationsByType(RequestMapping.class);
-				String paths = "";
-				if (anno != null && anno.length > 0 && anno[0] != null) {
-					RequestMapping ann = anno[0];
-					paths = String.join(",", (ann.path().length == 0) ? ann.value() : ann.path());
-					((ConfigurableApplicationContext) e.getApplicationContext()).getBeanFactory().
-							registerSingleton(crh.getClass().getSimpleName(), crh);
-				}
-				LOG.info("Registered custom resource handler {} at path(s) '{}'.", crh.getClass().getSimpleName(), paths);
+				List<String> paths = RestRequestMatcher.resolveHandlerPaths(crh);
+				((ConfigurableApplicationContext) e.getApplicationContext()).getBeanFactory().
+						registerSingleton(crh.getClass().getSimpleName(), crh);
+				LOG.info("Registered custom resource handler {} at path(s) '{}'.",
+						crh.getClass().getSimpleName(), String.join(",", paths));
 			}
 		});
 

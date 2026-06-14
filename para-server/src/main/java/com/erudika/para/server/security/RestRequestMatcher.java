@@ -17,6 +17,7 @@
  */
 package com.erudika.para.server.security;
 
+import com.erudika.para.core.rest.CustomResourceHandler;
 import com.erudika.para.core.utils.Para;
 import static com.erudika.para.server.security.SecurityConfig.DEFAULT_ROLES;
 import com.typesafe.config.ConfigList;
@@ -37,10 +38,12 @@ import org.springframework.security.web.servlet.util.matcher.PathPatternRequestM
 import org.springframework.security.web.util.matcher.OrRequestMatcher;
 import org.springframework.security.web.util.matcher.RegexRequestMatcher;
 import org.springframework.security.web.util.matcher.RequestMatcher;
+import org.springframework.web.bind.annotation.RequestMapping;
 
 /**
  * Rest request matcher - returns true if the request is RESTful.
- * True if the URI starts with /vX.Y.Z (.Y.Z are optional)
+ * True if the URI starts with /vX.Y.Z (.Y.Z are optional).
+ * Also matches custom resource handler paths so they go through the REST auth filter.
  * @author Alex Bogdanovski [alex@erudika.com]
  */
 public final class RestRequestMatcher implements RequestMatcher {
@@ -93,6 +96,8 @@ public final class RestRequestMatcher implements RequestMatcher {
 				}
 			}
 		}
+		// Register custom resource handler paths so they go through REST authentication
+		registerCustomHandlerPaths();
 	}
 
 	/**
@@ -122,6 +127,64 @@ public final class RestRequestMatcher implements RequestMatcher {
 	}
 
 	/**
+	 * Discovers custom resource handler paths and registers them as protected REST paths.
+	 * Reads paths from both the {@link CustomResourceHandler#getPaths()} interface method and
+	 * the {@code @RequestMapping} annotation on the handler class.
+	 *
+	 * <p>Paths are registered with the "APP" role (REST authentication) and all HTTP methods,
+	 * ensuring that custom resource requests go through the same signature verification chain
+	 * as the built-in API endpoints.</p>
+	 */
+	static void registerCustomHandlerPaths() {
+		try {
+			List<CustomResourceHandler> handlers = Para.getCustomResourceHandlers();
+			for (CustomResourceHandler handler : handlers) {
+				List<String> paths = resolveHandlerPaths(handler);
+				if (!paths.isEmpty()) {
+					PROTECTED_PATHS.add(new ProtectedPath(
+							new LinkedList<>(paths),
+							new LinkedList<>(List.of(DEFAULT_ROLES)),
+							new HashSet<>(Set.of(HttpMethod.values())),
+							true));
+					logger.info("Registered custom handler paths for REST auth: {} -> {}",
+							handler.getClass().getSimpleName(), paths);
+				}
+			}
+		} catch (Exception e) {
+			logger.warn("Failed to register custom resource handler paths for REST authentication.", e);
+		}
+	}
+
+	/**
+	 * Resolves the URL paths for a custom resource handler. Checks the programmatic
+	 * {@link CustomResourceHandler#getPaths()} method first; if empty, falls back to reading
+	 * the {@code @RequestMapping} annotation on the handler class.
+	 *
+	 * @param handler the custom resource handler
+	 * @return a list of URL path patterns (servlet-relative, starting with "/")
+	 */
+	public static List<String> resolveHandlerPaths(CustomResourceHandler handler) {
+		if (handler == null) {
+			return Collections.emptyList();
+		}
+		// Prefer the programmatic getPaths() method
+		List<String> paths = handler.getPaths();
+		if (paths != null && !paths.isEmpty()) {
+			return paths;
+		}
+		// Fall back to @RequestMapping annotation
+		RequestMapping[] annos = handler.getClass().getAnnotationsByType(RequestMapping.class);
+		if (annos != null && annos.length > 0 && annos[0] != null) {
+			RequestMapping ann = annos[0];
+			String[] values = (ann.path().length == 0) ? ann.value() : ann.path();
+			if (values != null && values.length > 0) {
+				return Arrays.asList(values);
+			}
+		}
+		return Collections.emptyList();
+	}
+
+	/**
 	 * Returns a list of custom protected paths.
 	 * @return a list of paths
 	 */
@@ -132,7 +195,7 @@ public final class RestRequestMatcher implements RequestMatcher {
 	/**
 	 * Matches a REST request path.
 	 * @param request a request
-	 * @return true if path is /v1/...
+	 * @return true if path is /v1/... or matches a registered custom handler path
 	 */
 	@Override
 	public boolean matches(HttpServletRequest request) {

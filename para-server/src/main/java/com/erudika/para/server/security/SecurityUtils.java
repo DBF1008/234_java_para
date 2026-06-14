@@ -379,7 +379,22 @@ public final class SecurityUtils {
 	}
 
 	/**
-	 * Validates the signature of the request.
+	 * Validates the signature of the request using AWS Signature Version 4 verification.
+	 *
+	 * <p><b>Path normalization contract:</b> This method uses {@code request.getRequestURI()}
+	 * which returns the <em>full URI path including the context path</em> (e.g., "/myapp/v1/users/123"
+	 * when the context path is "/myapp"). The {@link com.erudika.para.core.rest.Signer} on the client
+	 * side signs the same full path (endpoint + resourcePath), so both sides compute signatures over
+	 * identical path strings.</p>
+	 *
+	 * <p><b>Important:</b> Do NOT use {@code request.getServletPath()} here — it strips the context
+	 * path, which would produce a different path than what the client signed, causing signature
+	 * verification to fail when a context path is configured.</p>
+	 *
+	 * <p>This is intentionally different from {@link com.erudika.para.server.rest.RestUtils#extractResourcePath}
+	 * which strips the context path for permission checking purposes. Signature verification must use
+	 * the raw URI path to match the client's signing input.</p>
+	 *
 	 * @param incoming the incoming HTTP request containing a signature
 	 * @param secretKey the app's secret key
 	 * @return true if the signature is valid
@@ -415,7 +430,9 @@ public final class SecurityUtils {
 			params.put(param.getKey(), param.getValue()[0]);
 		}
 
-		String path = incoming.getRequestURI(); // DO NOT USE req.getServletPath() here!
+		// Use getRequestURI() which includes the context path — must match the client's signing path.
+		// DO NOT USE getServletPath() here — it strips the context path, breaking signature verification!
+		String path = incoming.getRequestURI();
 		String endpoint = Strings.CI.removeEnd(incoming.getRequestURL().toString(), path);
 		String httpMethod = incoming.getMethod();
 		InputStream entity;

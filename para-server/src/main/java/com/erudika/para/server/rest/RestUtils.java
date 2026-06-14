@@ -148,16 +148,27 @@ public final class RestUtils {
 
 	/**
 	 * Extracts the resource name, for example '/v1/_resource/path'
-	 * returns '_resource/path'.
+	 * returns '_resource/path'. Context-path aware: when the server runs with a context path
+	 * (e.g., '/myapp'), the context path is stripped before extracting the resource path so that
+	 * '/myapp/v1/_resource/path' also returns '_resource/path'.
 	 * @param request a request
-	 * @return the resource path
+	 * @return the resource path relative to the API version prefix
 	 */
 	public static String extractResourcePath(HttpServletRequest request) {
-		if (request == null || request.getRequestURI().length() <= 3) {
+		if (request == null) {
 			return "";
 		}
-		// get request path, strip first slash '/'
-		String uri = request.getRequestURI().substring(1);
+		String uri = request.getRequestURI();
+		// strip the context path from the URI to get the servlet-relative path
+		String contextPath = request.getContextPath();
+		if (contextPath != null && !contextPath.isEmpty() && uri.startsWith(contextPath)) {
+			uri = uri.substring(contextPath.length());
+		}
+		if (uri.length() <= 3) {
+			return "";
+		}
+		// strip leading '/'
+		uri = uri.substring(1);
 		// skip to the end of API version prefix '/v1/'
 		int start = uri.indexOf('/');
 

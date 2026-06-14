@@ -205,6 +205,41 @@ public class RestUtilsTest {
 	}
 
 	@Test
+	public void testExtractResourcePathWithContextPath() {
+		HttpServletRequest req = Mockito.mock(HttpServletRequest.class);
+
+		// with context path "/myapp"
+		Mockito.when(req.getContextPath()).thenReturn("/myapp");
+
+		Mockito.when(req.getRequestURI()).thenReturn("/myapp/v1/users/123");
+		assertEquals("users/123", extractResourcePath(req));
+
+		Mockito.when(req.getRequestURI()).thenReturn("/myapp/v1/_test/path/id");
+		assertEquals("_test/path/id", extractResourcePath(req));
+
+		Mockito.when(req.getRequestURI()).thenReturn("/myapp/v1/");
+		assertEquals("", extractResourcePath(req));
+
+		Mockito.when(req.getRequestURI()).thenReturn("/myapp/v1");
+		assertEquals("", extractResourcePath(req));
+
+		// with deeper context path "/app/v2"
+		Mockito.when(req.getContextPath()).thenReturn("/app/v2");
+		Mockito.when(req.getRequestURI()).thenReturn("/app/v2/v1/users/123");
+		assertEquals("users/123", extractResourcePath(req));
+
+		// with root context path (no context)
+		Mockito.when(req.getContextPath()).thenReturn("");
+		Mockito.when(req.getRequestURI()).thenReturn("/v1/users/123");
+		assertEquals("users/123", extractResourcePath(req));
+
+		// with root context path "/" (should also work)
+		Mockito.when(req.getContextPath()).thenReturn("/");
+		Mockito.when(req.getRequestURI()).thenReturn("/v1/users/123");
+		assertEquals("users/123", extractResourcePath(req));
+	}
+
+	@Test
 	public void testReadResourcePath() {
 		String appid = "test-app-1";
 		App app = new App(appid);
