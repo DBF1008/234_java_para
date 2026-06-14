@@ -1,0 +1,111 @@
+/*
+ * Copyright 2013-2026 Erudika. https://erudika.com
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * For issues and patches go to: https://github.com/erudika
+ */
+package com.erudika.para.server.security.filters;
+
+import com.erudika.para.core.App;
+import com.erudika.para.core.utils.Para;
+import com.erudika.para.core.utils.Utils;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.ServletRequest;
+import jakarta.servlet.ServletResponse;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import static jakarta.servlet.http.HttpServletResponse.SC_BAD_REQUEST;
+import static jakarta.servlet.http.HttpServletResponse.SC_OK;
+import java.io.IOException;
+import java.security.GeneralSecurityException;
+import java.util.Optional;
+import org.apache.commons.lang3.Strings;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.http.MediaType;
+import org.springframework.security.saml2.Saml2Exception;
+import org.springframework.security.saml2.provider.service.metadata.OpenSaml5MetadataResolver;
+import org.springframework.security.saml2.provider.service.registration.RelyingPartyRegistration;
+import org.springframework.web.filter.GenericFilterBean;
+
+/**
+ * A filter which returns the SAML metadata for a particular app.
+ * @author Alex Bogdanovski [alex@erudika.com]
+ */
+public class SAMLMetadataFilter extends GenericFilterBean {
+
+	private static final Logger LOG = LoggerFactory.getLogger(SAMLMetadataFilter.class);
+
+	/**
+	 * The default filter mapping.
+	 */
+	public static final String SAML_ACTION = "/saml_metadata";
+
+	/**
+	 * Creates the filter that exposes service provider metadata.
+	 */
+	public SAMLMetadataFilter() {
+		// default constructor
+	}
+
+	@Override
+	public void doFilter(ServletRequest req, ServletResponse res, FilterChain chain) throws IOException, ServletException {
+		HttpServletRequest request = (HttpServletRequest) req;
+		HttpServletResponse response = (HttpServletResponse) res;
+
+		final String requestURI = request.getServletPath();
+		String appid;
+
+		if (requestURI.startsWith(SAML_ACTION)) {
+			appid = Para.getConfig().getRootAppIdentifier();
+			if (requestURI.startsWith(SAML_ACTION + "/")) {
+				String id = Utils.urlDecode(Strings.CS.removeStart(requestURI, SAML_ACTION + "/"));
+				if (!id.isEmpty()) {
+					appid = id;
+				} else {
+					appid = Para.getConfig().getRootAppIdentifier();
+				}
+			}
+
+			try {
+				App app = Para.getDAO().read(App.id(appid));
+				if (app != null) {
+					Optional<RelyingPartyRegistration> registration =
+							SAMLAuthFilter.buildRelyingPartyRegistration(app, appid, request.getParameter("entityid"));
+					if (registration.isPresent()) {
+						OpenSaml5MetadataResolver resolver = new OpenSaml5MetadataResolver();
+						resolver.setUsePrettyPrint(true);
+						resolver.setSignMetadata(SAMLAuthFilter.shouldSignMetadata(app));
+						String metadata = resolver.resolve(registration.get());
+						response.setContentType(MediaType.TEXT_XML_VALUE);
+						response.setCharacterEncoding(Para.getConfig().defaultEncoding());
+						response.getOutputStream().println(metadata);
+						response.setStatus(SC_OK);
+						return;
+					}
+				}
+			} catch (Saml2Exception | GeneralSecurityException ex) {
+				LOG.error("Invalid SAML settings for app '{}': {}", appid, ex.getMessage());
+			} catch (Exception ex) {
+				LOG.error("Failed to generate SAML metadata for app '" + appid + "'", ex);
+			}
+			response.sendError(SC_BAD_REQUEST);
+			response.setStatus(SC_BAD_REQUEST);
+			return;
+		}
+		chain.doFilter(request, response);
+	}
+
+}
