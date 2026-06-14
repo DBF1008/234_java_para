@@ -45,7 +45,6 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.text.ParseException;
-import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import org.apache.commons.lang3.StringUtils;
@@ -199,7 +198,7 @@ public class JWTRestfulAuthFilter extends GenericFilterBean {
 						// issue token
 						SignedJWT newJWT = SecurityUtils.generateJWToken(user, app);
 						if (newJWT != null) {
-							succesHandler(response, user, newJWT);
+							SigninOrchestrator.writeTokenEnvelope(response, user, newJWT);
 							return true;
 						}
 					} else {
@@ -237,7 +236,7 @@ public class JWTRestfulAuthFilter extends GenericFilterBean {
 					if (jwtAuth != null && jwtAuth.getApp() != null) {
 						SignedJWT newToken = SecurityUtils.generateJWToken(user, jwtAuth.getApp());
 						if (newToken != null) {
-							succesHandler(response, user, newToken);
+							SigninOrchestrator.writeTokenEnvelope(response, user, newToken);
 							return true;
 						}
 					}
@@ -275,26 +274,6 @@ public class JWTRestfulAuthFilter extends GenericFilterBean {
 		RestUtils.returnStatusResponse(response, HttpServletResponse.SC_UNAUTHORIZED,
 				"Invalid or expired token.");
 		return false;
-	}
-
-	private void succesHandler(HttpServletResponse response, User user, final SignedJWT token) {
-		if (user != null && token != null) {
-			Map<String, Object> result = new HashMap<>();
-			try {
-				HashMap<String, Object> jwt = new HashMap<>();
-				jwt.put("access_token", token.serialize());
-				jwt.put("refresh", token.getJWTClaimsSet().getLongClaim("refresh"));
-				jwt.put("expires", token.getJWTClaimsSet().getExpirationTime().getTime());
-				result.put("jwt", jwt);
-				result.put("user", user);
-			} catch (ParseException ex) {
-				logger.info("Unable to parse JWT.", ex);
-				RestUtils.returnStatusResponse(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "Bad token.");
-			}
-			RestUtils.returnObjectResponse(response, result);
-		} else {
-			RestUtils.returnStatusResponse(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "Null token.");
-		}
 	}
 
 	private JWTAuthentication getJWTfromRequest(HttpServletRequest request) {

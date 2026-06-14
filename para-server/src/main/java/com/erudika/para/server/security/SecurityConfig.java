@@ -323,6 +323,10 @@ public class SecurityConfig {
 	@Bean
 	public PasswordlessAuthFilter getPasswordlessFilter(AuthenticationManager authenticationManager) {
 		PasswordlessAuthFilter passwordlessFilter = new PasswordlessAuthFilter("/" + PasswordlessAuthFilter.PASSWORDLESS_ACTION);
+		// The passwordless filter self-renders its response via SigninOrchestrator. The failure
+		// handler is load-bearing (browser-flow failures are thrown in attemptAuthentication and
+		// rendered here), while the success handler is intentionally inert on this filter (browser
+		// success already commits the redirect, so it no-ops on response.isCommitted()).
 		passwordlessFilter.setAuthenticationSuccessHandler(getSuccessHandler());
 		passwordlessFilter.setAuthenticationFailureHandler(getFailureHandler());
 		passwordlessFilter.setAuthenticationManager(authenticationManager);

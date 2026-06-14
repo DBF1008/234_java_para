@@ -24,8 +24,8 @@ import com.erudika.para.core.utils.CoreUtils;
 import com.erudika.para.core.utils.Para;
 import com.erudika.para.server.security.AuthenticatedUserDetails;
 import com.erudika.para.server.security.SecurityUtils;
+import com.erudika.para.server.security.SigninOrchestrator;
 import com.erudika.para.server.security.UserAuthentication;
-import com.erudika.para.server.utils.HttpUtils;
 import com.nimbusds.jwt.SignedJWT;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -35,11 +35,9 @@ import java.net.URI;
 import java.text.ParseException;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.Strings;
-import org.apache.commons.lang3.math.NumberUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
-import org.springframework.http.MediaType;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.web.authentication.AbstractAuthenticationProcessingFilter;
 
@@ -100,22 +98,18 @@ public class PasswordlessAuthFilter extends AbstractAuthenticationProcessingFilt
 				}
 			} else {
 				if (redirect) {
-					response.sendRedirect(returnToFailure, HttpStatus.FORBIDDEN.value());
+					SigninOrchestrator.redirectForbidden(response, returnToFailure);
 				} else {
-					response.sendError(HttpStatus.FORBIDDEN.value());
-					response.setStatus(HttpStatus.FORBIDDEN.value());
+					SigninOrchestrator.writeForbidden(response);
 				}
 				return null;
 			}
 			auth = SecurityUtils.checkIfActive(userAuth, user, redirect);
 			if (!redirect) {
 				if (auth == null) {
-					response.sendError(HttpStatus.FORBIDDEN.value());
-					response.setStatus(HttpStatus.FORBIDDEN.value());
+					SigninOrchestrator.writeForbidden(response);
 				} else {
-					response.setContentType(MediaType.TEXT_PLAIN_VALUE);
-					response.setStatus(HttpStatus.OK.value());
-					response.getWriter().print(SecurityUtils.generateJWToken(user, app).serialize());
+					SigninOrchestrator.writePasswordlessRestToken(response, app, user);
 				}
 				return null;
 			} else {
@@ -128,19 +122,8 @@ public class PasswordlessAuthFilter extends AbstractAuthenticationProcessingFilt
 					logger.warn(errorMsg);
 					return null;
 				}
-				if (auth == null) {
-					response.sendRedirect(returnToFailure, HttpStatus.FORBIDDEN.value());
-				} else {
-					boolean httpOnly = "true".equals(StringUtils.defaultIfBlank(request.getParameter("httpOnlyCookie"), "true"));
-					String sameSite = StringUtils.defaultIfBlank(request.getParameter("sameSiteCookie"), "Strict");
-					String authCookieName = Para.getConfig().getSettingForApp(app, "auth_cookie",
-							StringUtils.join(App.identifier(appid), "-auth"));
-					String authCookieValue = SecurityUtils.generateJWToken(user, app).serialize();
-					int maxAge = NumberUtils.toInt(Para.getConfig().getSettingForApp(app, "session_timeout", null),
-							app.getTokenValiditySec().intValue());
-					HttpUtils.setAuthCookie(authCookieName, authCookieValue, httpOnly, maxAge, sameSite, request, response);
-					response.sendRedirect(returnToSuccess, HttpStatus.FOUND.value());
-				}
+				// a browser failure already threw in checkIfActive(..., redirect=true), so auth is non-null here
+				SigninOrchestrator.completePasswordlessBrowserSuccess(request, response, app, appid, user, returnToSuccess);
 			}
 		}
 		return auth;
